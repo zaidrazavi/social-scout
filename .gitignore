@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Scraped/downloaded media — never commit content
+downloads/
+
+# Local env / secrets — nothing credential-shaped belongs in this repo
+.env
+*.env
+cookies*.txt
+*.session
+
+# OS noise
+.DS_Store
+Thumbs.db

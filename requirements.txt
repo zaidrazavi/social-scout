@@ -1,0 +1,4 @@
+# yt-dlp: YouTube + Instagram/TikTok video download & caption extraction
+yt-dlp
+# websocket-client: Chrome DevTools protocol connection for the scout browser
+websocket-client
