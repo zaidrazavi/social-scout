@@ -162,10 +162,12 @@ def cmd_hashtags(args):
     tab = b.page("https://www.instagram.com/", settle=5)
     try:
         import urllib.parse
-        q = urllib.parse.quote(args.niche)
+        # topsearch only populates its hashtags array when the query is
+        # #-prefixed; a bare keyword returns users/places instead.
+        q = urllib.parse.quote("#" + args.niche.lstrip("#").replace(" ", ""))
         data = backoff_retry(
             lambda: ig_fetch(tab, "/web/search/topsearch/"
-                             f"?context=blended&query={q}&include_reel=false"),
+                             f"?context=blended&query={q}"),
             "Instagram hashtag search")
         tags = [{
             "hashtag": "#" + h["hashtag"]["name"],
