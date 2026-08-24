@@ -172,18 +172,19 @@ def check_quora_discovery():
 
 # --- optional extras -------------------------------------------------------
 
-def check_whisper_key():
-    import os
-    if os.environ.get("OPENAI_API_KEY"):
-        return True, "OPENAI_API_KEY set — Whisper transcript fallback enabled"
-    return "INFO", ("OPENAI_API_KEY not set — IG/TikTok videos without native "
-                    "captions won't get transcripts (optional)")
-
-
-def check_ffmpeg():
-    if shutil.which("ffmpeg"):
-        return True, "found — big videos can be shrunk for Whisper"
-    return "INFO", "not found — only needed for videos over 25 MB (optional)"
+def check_whisper():
+    """Local faster-whisper — the transcript fallback. Present after
+    `pip install -r requirements.txt`; the model downloads on first real use,
+    so we only check the package imports here (importing does not download)."""
+    try:
+        import faster_whisper  # noqa: F401
+    except ImportError:
+        return "INFO", ("faster-whisper not installed — IG/TikTok videos "
+                        "without native captions won't get transcripts. "
+                        "Fix: pip install -r requirements.txt (optional)")
+    from transcribe import WHISPER_MODEL
+    return True, (f"installed — local transcripts enabled (model "
+                  f"'{WHISPER_MODEL}', downloads on first use, no key needed)")
 
 
 CHECKS = [
@@ -200,8 +201,7 @@ CHECKS = [
     ("TikTok Creative Center (trending)", check_creative_center, "tiktok_cc"),
     ("Web reader", check_webread, "web"),
     ("Quora discovery (best-effort)", check_quora_discovery, "quora"),
-    ("Whisper transcription (optional)", check_whisper_key, "optional"),
-    ("ffmpeg (optional)", check_ffmpeg, "optional"),
+    ("Local Whisper transcripts", check_whisper, "optional"),
 ]
 
 

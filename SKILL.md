@@ -94,9 +94,12 @@ reason; don't fight the caps.
    and photos have no view count — report what exists.
 6. **TikTok trending list may be short** (top rows only without a TikTok One
    business login) — the output's `note` field says so; pass it on.
-7. **Transcripts ladder**: native captions → Whisper (needs `OPENAI_API_KEY`)
-   → video downloaded + explicit "no transcript possible" note. Always tell
-   the user which source produced the text (auto-transcripts contain errors).
+7. **Transcripts ladder**: native captions → **local Whisper** (faster-whisper,
+   runs on the user's machine, no key; model auto-downloads on first use, so
+   the first transcript in a session is slow) → video downloaded + explicit
+   "no transcript possible" note (music-only/silent videos land here). Always
+   tell the user which source produced the text (auto-transcripts contain
+   errors) and that the first run may take a bit while the model downloads.
 8. **Reddit output reports `"via"`**, transcripts report `# source:` — pass
    these through when relevant.
 

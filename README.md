@@ -64,12 +64,28 @@ normal browser. Re-run `python scripts/browser.py status` (or the doctor) to
 confirm `LOGGED IN`. Every Instagram/TikTok command checks this first and
 stops with instructions if you're not logged in — it never silently proceeds.
 
+### Transcripts (video → text)
+
+For Instagram/TikTok videos, the skill first tries the platform's own
+captions. When a video has none, it falls back to **local Whisper**
+transcription via the `faster-whisper` package — which runs entirely on your
+own machine with **no API key and no account, ever**.
+
+There is no separate setup: the same `pip install -r requirements.txt` the
+whole team already runs installs it, and the speech model (default `base`,
+~150 MB) **downloads itself automatically the first time a transcript is
+actually needed**. Every run after that reuses the cached model offline.
+
+Because it runs on your device, it's slower than a cloud service —
+especially without a GPU — but it's completely free. On a normal laptop a
+short reel transcribes in a few seconds. To trade speed for accuracy, set
+`SOCIAL_SCOUT_WHISPER_MODEL` (`tiny` fastest → `base` default → `small` /
+`medium` more accurate). If neither captions nor Whisper produce text, you
+still get the downloaded video plus a clear "no transcript possible" note —
+never a silent empty result.
+
 ### Optional extras
 
-- `OPENAI_API_KEY` env var — enables Whisper transcription for IG/TikTok
-  videos that have no native captions. Without it you still get the video
-  file plus a clear "no transcript possible" note.
-- `ffmpeg` on PATH — only needed for videos over Whisper's 25 MB limit.
 - `JINA_API_KEY` env var — raises the web reader's free rate limit
   (~20 pages/min without it). Not required.
 
@@ -113,7 +129,8 @@ accounts are mandatory, not optional.
 | Reddit global search fails | Pullpush (the only backend able to search all of Reddit) is down — retry with specific subreddits, which use Arctic Shift |
 | Quora returns nothing | expected occasionally — it's best-effort web search; retry later or broaden the topic |
 | Web reader slow or throttled | free Jina tier is ~20 req/min; set `JINA_API_KEY`, or pass `--local` for direct fetching |
-| "No transcript possible" | the video has no native captions and `OPENAI_API_KEY` isn't set |
+| "No transcript possible" | video has no native captions and local Whisper found no speech (music-only/silent), or `faster-whisper` isn't installed (`pip install -r requirements.txt`) |
+| First transcript is slow | one-time Whisper model download; later runs reuse the cache. Set `SOCIAL_SCOUT_WHISPER_MODEL=tiny` for more speed |
 | Doctor shows FAIL on something that worked yesterday | platforms change; run it twice (some backends flap), then open an issue with the doctor output |
 
 ## Repo hygiene

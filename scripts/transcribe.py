@@ -4,12 +4,18 @@ YouTube backend):
 
   1. Native captions from the platform, via yt-dlp subtitle tracks (best:
      free, instant, exact).
-  2. Whisper transcription through the OpenAI API — only if OPENAI_API_KEY
-     is set. The downloaded mp4 is sent directly when it's under Whisper's
-     25 MB limit (typical reels/TikToks are); bigger files need ffmpeg on
-     PATH to extract a small audio track first.
-  3. Neither available -> the video is still downloaded and reported with a
+  2. Local Whisper transcription via the faster-whisper package — runs
+     entirely on this machine, no API key and no account, ever. The model
+     (default "base") downloads itself automatically on first use and is
+     cached for every run after. No file-size limit and no external ffmpeg
+     needed: faster-whisper decodes audio internally.
+  3. Neither works -> the video is still downloaded and reported with a
      clear "no transcript possible" note — never a silent empty result.
+
+Whisper here is CPU-friendly but not instant: on a laptop without a GPU,
+expect roughly real-time-ish transcription (a 30 s reel in a handful of
+seconds with "base"). Set SOCIAL_SCOUT_WHISPER_MODEL to trade speed for
+accuracy ("tiny" fastest, "base" default, "small"/"medium" more accurate).
 
 Used as a library by instagram.py / tiktok.py; also runs standalone:
   python scripts/transcribe.py <video_url> [--cookies FILE] [--lang en]
@@ -29,7 +35,8 @@ from common import DOWNLOADS_DIR, die, warn
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-WHISPER_LIMIT = 25 * 1024 * 1024
+# Smallest practical default so it stays usable on a normal no-GPU laptop.
+WHISPER_MODEL = os.environ.get("SOCIAL_SCOUT_WHISPER_MODEL", "base")
 
 
 def ytdlp_cmd():
@@ -112,43 +119,34 @@ def download_video(url, cookies=None):
     return path
 
 
-def whisper(path, lang="en"):
-    """POST the file to OpenAI's transcription endpoint (no SDK needed)."""
-    key = os.environ["OPENAI_API_KEY"]
-    boundary = uuid.uuid4().hex
-    with open(path, "rb") as f:
-        blob = f.read()
-
-    def part(name, value):
-        return (f"--{boundary}\r\nContent-Disposition: form-data; "
-                f"name=\"{name}\"\r\n\r\n{value}\r\n").encode()
-
-    body = (part("model", "whisper-1")
-            + part("response_format", "verbose_json")
-            + part("language", lang)
-            + (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
-               f"filename=\"{os.path.basename(path)}\"\r\n"
-               f"Content-Type: application/octet-stream\r\n\r\n").encode()
-            + blob + f"\r\n--{boundary}--\r\n".encode())
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/audio/transcriptions", data=body,
-        headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req, timeout=600) as r:
-        data = json.loads(r.read().decode("utf-8"))
-    rows = [f"{stamp(seg['start'])} {seg['text'].strip()}"
-            for seg in data.get("segments", [])]
-    return "\n".join(rows) if rows else data.get("text", "").strip()
+_MODEL = None  # loaded once per process, then reused across calls
 
 
-def shrink_audio(path):
-    """Extract a small mono audio track so big videos fit Whisper's 25 MB cap."""
-    if not shutil.which("ffmpeg"):
-        return None
-    audio = path.rsplit(".", 1)[0] + ".m4a"
-    proc = run(["ffmpeg", "-y", "-i", path, "-vn", "-ac", "1",
-                "-b:a", "48k", audio], timeout=900)
-    return audio if proc.returncode == 0 else None
+def load_model():
+    """Load (and on first ever use, auto-download) the faster-whisper model.
+    Cached module-level so repeated transcripts in one run don't reload it."""
+    global _MODEL
+    if _MODEL is None:
+        from faster_whisper import WhisperModel  # imported lazily: only the
+        # transcript fallback needs it, so YouTube/Reddit/web users who never
+        # transcribe don't pay the import cost.
+        warn(f"loading local Whisper model '{WHISPER_MODEL}' "
+             "(first run downloads it once, then it's cached)...")
+        # int8 on CPU keeps memory and time reasonable on a normal laptop;
+        # faster-whisper falls back gracefully if a GPU isn't present.
+        _MODEL = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+    return _MODEL
+
+
+def whisper_local(path):
+    """Transcribe a media file entirely on this machine. Returns (text,
+    detected_language). Language is auto-detected — forcing a language on a
+    reel in another tongue would garble it."""
+    model = load_model()
+    segments, info = model.transcribe(path, vad_filter=True)
+    rows = [f"{stamp(seg.start)} {seg.text.strip()}"
+            for seg in segments if seg.text.strip()]
+    return "\n".join(rows), getattr(info, "language", None)
 
 
 def transcribe(url, cookies=None, lang="en"):
@@ -160,31 +158,26 @@ def transcribe(url, cookies=None, lang="en"):
                 "transcript": caption[0], "source": caption[1]}
 
     path = download_video(url, cookies)
-    if os.environ.get("OPENAI_API_KEY"):
-        target = path
-        if os.path.getsize(path) > WHISPER_LIMIT:
-            target = shrink_audio(path)
-            if not target:
-                return {"transcript": None, "video_path": path, "note":
-                        "No native captions; file exceeds Whisper's 25 MB limit "
-                        "and ffmpeg is not installed to shrink it. Install ffmpeg "
-                        "or transcribe manually."}
-            if os.path.getsize(target) > WHISPER_LIMIT:
-                return {"transcript": None, "video_path": path, "note":
-                        "No native captions; even the extracted audio exceeds "
-                        "Whisper's 25 MB limit."}
-        try:
-            text = whisper(target, lang)
-        except Exception as e:
-            return {"transcript": None, "video_path": path, "note":
-                    f"No native captions and Whisper transcription failed: {e}"}
-        return {"transcript": text, "video_path": path,
-                "source": "Whisper (auto-transcribed; may contain errors)"}
-
-    return {"transcript": None, "video_path": path, "note":
-            "No native captions on this video and no OPENAI_API_KEY set, so "
-            "no transcript is possible. The video file was downloaded to the "
-            "path above — set OPENAI_API_KEY to enable Whisper transcription."}
+    try:
+        text, detected = whisper_local(path)
+    except ImportError:
+        return {"transcript": None, "video_path": path, "note":
+                "No native captions, and the local Whisper package isn't "
+                "installed. Run: pip install -r requirements.txt "
+                "(it downloads the model automatically on first use). The "
+                "video file was still saved to the path above."}
+    except Exception as e:
+        return {"transcript": None, "video_path": path, "note":
+                f"No native captions and local Whisper transcription failed: "
+                f"{e}. The video file was saved to the path above."}
+    if not text.strip():
+        return {"transcript": None, "video_path": path, "note":
+                "No native captions, and local Whisper found no speech in the "
+                "audio (music-only or silent video). Saved to the path above."}
+    lang_note = f", detected {detected}" if detected else ""
+    return {"transcript": text, "video_path": path,
+            "source": f"local Whisper '{WHISPER_MODEL}'{lang_note} "
+                      "(auto-transcribed, may contain errors)"}
 
 
 def emit_result(result, header):

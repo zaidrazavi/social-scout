@@ -2,3 +2,7 @@
 yt-dlp
 # websocket-client: Chrome DevTools protocol connection for the scout browser
 websocket-client
+# faster-whisper: local, on-device transcript fallback when a video has no
+# native captions. No API key, no account. The model (~150 MB for "base")
+# downloads automatically the first time a transcript is needed.
+faster-whisper
