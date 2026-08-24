@@ -39,15 +39,30 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 WHISPER_MODEL = os.environ.get("SOCIAL_SCOUT_WHISPER_MODEL", "base")
 
 
-def ytdlp_cmd():
-    if shutil.which("yt-dlp"):
-        return ["yt-dlp"]
-    return [sys.executable, "-m", "yt_dlp"]
+def ytdlp_cmd(cookies=None, impersonate=None):
+    """Base yt-dlp invocation. `impersonate` (e.g. "chrome") uses curl_cffi to
+    mimic a real browser's TLS fingerprint — TikTok now 403s without it."""
+    base = ["yt-dlp"] if shutil.which("yt-dlp") else [sys.executable, "-m", "yt_dlp"]
+    if cookies:
+        base += ["--cookies", cookies]
+    if impersonate:
+        base += ["--impersonate", impersonate]
+    return base
 
 
 def run(args, timeout=600):
     return subprocess.run(args, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout)
+
+
+def ytdlp_info(url, cookies=None, impersonate=None):
+    """Fetch a video's full metadata dict via yt-dlp (no download)."""
+    proc = run(ytdlp_cmd(cookies, impersonate) + ["-J", "--skip-download", url])
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").strip().splitlines()
+        raise RuntimeError("yt-dlp could not read the video: "
+                           + (tail[-1][:200] if tail else "unknown error"))
+    return json.loads(proc.stdout)
 
 
 def stamp(seconds):
@@ -75,14 +90,11 @@ def parse_vtt(text):
     return "\n".join(lines)
 
 
-def native_captions(url, cookies=None, lang="en"):
-    """Try to pull a platform-provided caption track. Returns text or None."""
-    base = ytdlp_cmd() + (["--cookies", cookies] if cookies else [])
-    info_proc = run(base + ["-J", "--skip-download", url])
-    if info_proc.returncode != 0:
-        raise RuntimeError(f"yt-dlp could not read the video page: "
-                           f"{(info_proc.stderr or '').strip().splitlines()[-1:] or 'unknown'}")
-    info = json.loads(info_proc.stdout)
+def native_captions(url, cookies=None, lang="en", impersonate=None, info=None):
+    """Try to pull a platform-provided caption track. Returns (info, track).
+    `info` may be passed in to avoid a duplicate metadata fetch."""
+    if info is None:
+        info = ytdlp_info(url, cookies, impersonate)
     tracks = {**(info.get("automatic_captions") or {}),
               **(info.get("subtitles") or {})}  # manual tracks win on key clash
     code = next((c for c in tracks
@@ -106,12 +118,11 @@ def native_captions(url, cookies=None, lang="en"):
     return info, (parse_vtt(raw), f"native captions ({code})")
 
 
-def download_video(url, cookies=None):
+def download_video(url, cookies=None, impersonate=None):
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     out = DOWNLOADS_DIR / f"%(id)s-{uuid.uuid4().hex[:6]}.%(ext)s"
-    base = ytdlp_cmd() + (["--cookies", cookies] if cookies else [])
-    proc = run(base + ["--no-playlist", "-o", str(out),
-                       "--print", "after_move:filepath", "--no-simulate", url])
+    proc = run(ytdlp_cmd(cookies, impersonate) + ["--no-playlist", "-o", str(out),
+               "--print", "after_move:filepath", "--no-simulate", url])
     if proc.returncode != 0:
         raise RuntimeError("video download failed: "
                            + (proc.stderr or "").strip().splitlines()[-1][:200])
@@ -149,15 +160,15 @@ def whisper_local(path):
     return "\n".join(rows), getattr(info, "language", None)
 
 
-def transcribe(url, cookies=None, lang="en"):
+def transcribe(url, cookies=None, lang="en", impersonate=None):
     """Full ladder. Returns dict with keys: transcript (or None), source,
     video_path (when downloaded), note (when transcript impossible)."""
-    info, caption = native_captions(url, cookies, lang)
+    info, caption = native_captions(url, cookies, lang, impersonate)
     if caption and caption[0].strip():
         return {"title": info.get("title") or info.get("description", "")[:80],
                 "transcript": caption[0], "source": caption[1]}
 
-    path = download_video(url, cookies)
+    path = download_video(url, cookies, impersonate)
     try:
         text, detected = whisper_local(path)
     except ImportError:
@@ -199,9 +210,10 @@ def main():
     p.add_argument("url")
     p.add_argument("--cookies", help="Netscape cookies.txt (yt-dlp format)")
     p.add_argument("--lang", default="en")
+    p.add_argument("--impersonate", help="yt-dlp impersonate target, e.g. chrome")
     args = p.parse_args()
     try:
-        result = transcribe(args.url, args.cookies, args.lang)
+        result = transcribe(args.url, args.cookies, args.lang, args.impersonate)
     except RuntimeError as e:
         die(str(e))
     emit_result(result, args.url)

@@ -6,3 +6,8 @@ websocket-client
 # native captions. No API key, no account. The model (~150 MB for "base")
 # downloads automatically the first time a transcript is needed.
 faster-whisper
+# curl_cffi: lets yt-dlp impersonate a real browser's TLS fingerprint, used
+# for TikTok robustness under anti-bot pressure. Optional — the code falls
+# back to plain yt-dlp if it's missing — but recommended. The <0.16 pin
+# matches the range yt-dlp supports; a newer curl_cffi is ignored by yt-dlp.
+curl_cffi>=0.10,<0.16

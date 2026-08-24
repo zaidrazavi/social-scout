@@ -140,6 +140,27 @@ def check_tiktok_login():
     return _login_check("tiktok.com", "TikTok")
 
 
+def check_tiktok_impersonation():
+    """TikTok metadata/transcripts need yt-dlp browser impersonation (curl_cffi
+    in the version range yt-dlp supports). Without it every TikTok video/
+    transcript request gets HTTP 403."""
+    import subprocess
+    out = subprocess.run((["yt-dlp"] if shutil.which("yt-dlp")
+                          else [sys.executable, "-m", "yt_dlp"])
+                         + ["--list-impersonate-targets"],
+                         capture_output=True, text=True, timeout=60)
+    if "chrome" in (out.stdout or "").lower():
+        return True, "yt-dlp browser impersonation available (curl_cffi)"
+    try:
+        import curl_cffi  # noqa: F401
+        return False, ("curl_cffi installed but yt-dlp can't use it — version "
+                       "mismatch. Fix: pip install -r requirements.txt (pins "
+                       "curl_cffi<0.16), then pip install -U yt-dlp")
+    except ImportError:
+        return False, ("curl_cffi missing — TikTok video/transcript will 403. "
+                       "Fix: pip install -r requirements.txt")
+
+
 def check_creative_center():
     import browser
     import tiktok
@@ -198,6 +219,7 @@ CHECKS = [
     ("Scout browser (CDP)", check_scout_browser, "browser"),
     ("Instagram login", check_instagram_login, "instagram"),
     ("TikTok login", check_tiktok_login, "tiktok"),
+    ("TikTok impersonation (yt-dlp)", check_tiktok_impersonation, "tiktok"),
     ("TikTok Creative Center (trending)", check_creative_center, "tiktok_cc"),
     ("Web reader", check_webread, "web"),
     ("Quora discovery (best-effort)", check_quora_discovery, "quora"),

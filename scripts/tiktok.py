@@ -3,16 +3,24 @@
 
 Requires the scout browser (scripts/browser.py launch) with a DEDICATED SPARE
 TikTok account logged in — commands hard-stop with instructions when no
-session is detected. Video pages embed a full JSON state blob
-(__UNIVERSAL_DATA_FOR_REHYDRATION__) which supplies metadata without any
-extra API calls; comments use TikTok's own web API from inside the page.
+session is detected.
+
+TikTok blocks direct video-page loads in the browser, so:
+- metadata/download come from yt-dlp. Counterintuitively this runs WITHOUT
+  the scout cookies: an authenticated-but-unsigned request trips TikTok's
+  anti-bot and 403s, whereas an anonymous yt-dlp fetch of the (public) video
+  succeeds. Browser TLS impersonation (curl_cffi) is used when available for
+  robustness, with a plain fallback so curl_cffi isn't a hard requirement.
+- comments come from TikTok's own comment API called from inside a live,
+  logged-in tiktok.com page (that endpoint needs the session and still
+  answers a same-origin fetch).
 Trending hashtags come from TikTok Creative Center (public, no login).
 
 CLI:
   video <url>                    caption, like/comment/share/view counts,
                                  duration, hashtags, author, date
   comments <url> [--max-comments N]   top comments (default 30, ceiling 100)
-  transcript <url> [--lang en]   native captions -> Whisper (if key) -> note
+  transcript <url> [--lang en]   native captions -> local Whisper -> note
   hashtags [niche] [--days 7|30|120]  Creative Center trending hashtags;
                                  optional niche keyword filters the list
 """
@@ -29,6 +37,7 @@ from common import (DEFAULT_MAX_COMMENTS, HARD_MAX_COMMENTS, backoff_retry,
                     clamp_cap, die, emit, jitter_sleep)
 
 CREATIVE_CENTER = "https://ads.tiktok.com/creative/creativeCenter/trends/hashtag"
+IMPERSONATE = "chrome"  # yt-dlp target that clears TikTok's TLS fingerprinting
 
 
 def _iso(ts):
@@ -37,70 +46,81 @@ def _iso(ts):
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def open_video(url, require_login=True):
-    b = browser.attach()
-    if require_login:
-        b.require_login("tiktok.com", "TikTok")
-    tab = b.page(url, settle=6)
-    return b, tab
+def parse_url(url):
+    """Return (video_id, author_handle) from a standard TikTok video URL."""
+    vid = re.search(r"/video/(\d+)", url)
+    author = re.search(r"tiktok\.com/@([\w.\-]+)", url)
+    return (vid.group(1) if vid else None,
+            author.group(1) if author else None)
 
 
-def item_struct(tab):
-    """Pull the embedded JSON state from the video page."""
-    raw = tab.eval(
-        "document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__')?.textContent")
-    if not raw:
-        raise RuntimeError(
-            "TikTok page no longer embeds __UNIVERSAL_DATA_FOR_REHYDRATION__ — "
-            "the platform likely changed its page structure, or you hit a "
-            "captcha wall. Open the scout browser window to check, and run "
-            "scripts/doctor.py")
-    data = json.loads(raw)
-    detail = (data.get("__DEFAULT_SCOPE__") or {}).get("webapp.video-detail") or {}
-    item = (detail.get("itemInfo") or {}).get("itemStruct")
-    if not item:
-        status = detail.get("statusMsg") or detail.get("statusCode")
-        raise RuntimeError(
-            f"TikTok returned no video data (status: {status}). The video may "
-            "be private/deleted/region-locked, or you hit a captcha — open the "
-            "scout browser window to check.")
-    return item
+def context_page(b, author):
+    """A live logged-in tiktok.com page to run same-origin API fetches from.
+    Direct video URLs 403, but a profile/home page renders fine and carries
+    the session, so comment-API fetches from here succeed."""
+    url = f"https://www.tiktok.com/@{author}" if author else "https://www.tiktok.com/"
+    return b.page(url, settle=6)
 
 
-def norm_video(item):
-    stats = item.get("stats") or {}
+def hashtags_from(desc):
+    return ["#" + h for h in re.findall(r"#(\w+)", desc or "")]
+
+
+def norm_video(info):
+    """Map a yt-dlp TikTok info dict to our shape."""
+    desc = info.get("description") or info.get("title") or ""
     return {
-        "id": item.get("id"),
-        "url": f"https://www.tiktok.com/@{(item.get('author') or {}).get('uniqueId')}/video/{item.get('id')}",
-        "author": (item.get("author") or {}).get("uniqueId"),
-        "caption": item.get("desc"),
-        "hashtags": ["#" + c.get("title", "") for c in item.get("challenges") or []],
-        "like_count": stats.get("diggCount"),
-        "comment_count": stats.get("commentCount"),
-        "share_count": stats.get("shareCount"),
-        "view_count": stats.get("playCount"),
-        "saved_count": stats.get("collectCount"),
-        "duration_seconds": (item.get("video") or {}).get("duration"),
-        "posted_at": _iso(item.get("createTime")),
-        "music": (item.get("music") or {}).get("title"),
+        "id": info.get("id"),
+        "url": info.get("webpage_url") or info.get("original_url"),
+        "author": info.get("uploader") or info.get("channel"),
+        "caption": desc,
+        "hashtags": hashtags_from(desc),
+        "like_count": info.get("like_count"),
+        "comment_count": info.get("comment_count"),
+        "share_count": info.get("repost_count"),
+        "view_count": info.get("view_count"),
+        "duration_seconds": info.get("duration"),
+        "posted_at": _iso(info.get("timestamp")),
+        "music": info.get("track"),
     }
 
 
+def ytdlp_fetch(fn):
+    """Run a yt-dlp call trying TLS impersonation first, then plain. Keeps
+    curl_cffi optional: if the impersonate target is unavailable the plain
+    attempt still works. `fn` takes the impersonate value and returns a result
+    or raises RuntimeError."""
+    last = None
+    for imp in (IMPERSONATE, None):
+        try:
+            return fn(imp)
+        except RuntimeError as e:
+            last = e
+    raise last
+
+
 def cmd_video(args):
-    _, tab = open_video(args.url)
-    try:
-        emit(norm_video(backoff_retry(lambda: item_struct(tab), "TikTok video data")))
-    finally:
-        tab.close()
+    b = browser.attach()
+    b.require_login("tiktok.com", "TikTok")
+    # NB: yt-dlp runs cookieless on purpose — passing the logged-in session
+    # cookies makes TikTok 403 the request; the public video reads fine anon.
+    info = backoff_retry(
+        lambda: ytdlp_fetch(lambda imp: transcribe.ytdlp_info(args.url, None, imp)),
+        "TikTok video metadata")
+    emit(norm_video(info))
 
 
 def cmd_comments(args):
     cap = clamp_cap(args.max_comments, DEFAULT_MAX_COMMENTS,
                     HARD_MAX_COMMENTS, "max-comments")
-    _, tab = open_video(args.url)
+    video_id, author = parse_url(args.url)
+    if not video_id:
+        die(f"Couldn't find a video id in '{args.url}' "
+            "(expected .../video/<digits>)")
+    b = browser.attach()
+    b.require_login("tiktok.com", "TikTok")
+    tab = context_page(b, author)
     try:
-        item = item_struct(tab)
-        video_id = item["id"]
         rows, cursor = [], 0
         while len(rows) < cap:
             js = f"""
@@ -139,16 +159,16 @@ def cmd_comments(args):
 
 
 def cmd_transcript(args):
-    b, tab = open_video(args.url)
-    tab.close()
-    cookies = b.cookies_txt(["tiktok.com"])
+    b = browser.attach()
+    b.require_login("tiktok.com", "TikTok")
+    # Cookieless for the same reason as cmd_video (avoids TikTok's 403).
     try:
-        result = transcribe.transcribe(args.url, cookies, args.lang)
+        result = backoff_retry(
+            lambda: ytdlp_fetch(lambda imp:
+                                transcribe.transcribe(args.url, None, args.lang, imp)),
+            "TikTok transcript")
     except RuntimeError as e:
         die(str(e))
-    finally:
-        import os
-        os.unlink(cookies)
     transcribe.emit_result(result, args.url)
 
 
