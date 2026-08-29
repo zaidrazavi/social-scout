@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
-"""Reddit scraping via free public archive APIs — no OAuth, no API key, no account.
+"""Reddit scraping via free public sources — no OAuth, no API key, no account.
 
-PRIMARY:  Arctic Shift  (https://arctic-shift.photon-reddit.com/api)
-FALLBACK: Pullpush      (https://api.pullpush.io/reddit)
+PRIMARY:   Arctic Shift  (https://arctic-shift.photon-reddit.com/api)
+FALLBACK:  Pullpush      (https://api.pullpush.io/reddit)
+LAST-RESORT: Reddit's own public .json (https://www.reddit.com/....json)
 
-Every request tries Arctic Shift first; on any failure the same request is
-retried against Pullpush. Each result reports which API answered ("via").
-Exception: a keyword search across ALL of Reddit goes straight to Pullpush,
-because Arctic Shift requires a subreddit or author filter for text search.
+Every request tries Arctic Shift first; on failure it retries Pullpush; and
+only if BOTH archives fail does it fall back to Reddit's own public .json
+endpoint. Each result reports which source answered ("via").
+
+The Reddit .json tier is deliberately a lightweight last resort, NOT a
+primary path: Reddit rate-limits and can block unauthenticated .json traffic
+if it's hit too often, so this tier jitters before every call and backs off
+exponentially on 429/5xx (same pattern as the Instagram/TikTok backends).
+Keep usage occasional. Its one upside: unlike the archives (which serve
+crawl-time snapshots), .json returns Reddit's LIVE scores/counts.
+Note: .json can't honor precise --after/--before server-side, so date bounds
+are applied client-side to whatever it returns.
+
+Exception: a keyword search across ALL of Reddit skips Arctic Shift (which
+requires a subreddit/author filter for text search) and goes Pullpush ->
+Reddit .json.
 
 Subcommands:
   search <query>       Keyword search for posts. Options: --subreddit X[,Y,...],
@@ -33,12 +46,20 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from common import backoff_retry, jitter_sleep
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ARCTIC = "https://arctic-shift.photon-reddit.com/api"
 PULLPUSH = "https://api.pullpush.io/reddit"
+REDDIT = "https://www.reddit.com"
 UA = "social-scout-skill/1.0 (free research tool)"
+# Reddit's own .json 403s the descriptive UA above; it's far more permissive to
+# a normal browser UA (from a normal residential IP). Datacenter/VPN IPs may
+# still be blocked outright — that's the documented last-resort limitation.
+REDDIT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 TRUNCATE = 1500
 
 
@@ -46,6 +67,24 @@ def http_json(url, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def reddit_json_get(url, timeout=30):
+    """GET Reddit's public .json with a browser UA. When Reddit is blocking or
+    rate-limiting the request it answers with an HTML consent/"Welcome to
+    Reddit" gate (HTTP 200) instead of JSON, or a 403 — surface either as a
+    clear, specific error rather than a cryptic JSON-decode failure."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": REDDIT_UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        ctype = r.headers.get("Content-Type", "")
+        body = r.read().decode("utf-8", "replace")
+    if "json" not in ctype.lower() and body.lstrip()[:1] not in ("{", "["):
+        raise RuntimeError(
+            "Reddit served a block/consent page instead of JSON — its public "
+            ".json is rate-limiting or blocking this network (the documented "
+            "lightweight-fallback limitation; use a residential IP or wait)")
+    return json.loads(body)
 
 
 def extract_items(payload):
@@ -132,22 +171,79 @@ def fetch_arctic(url):
             time.sleep(5)
 
 
-def with_fallback(arctic_url, pullpush_url):
-    """Try Arctic Shift (with 422 retries), then Pullpush. Raise only if both fail."""
-    primary_error = None
+def extract_reddit_json(payload):
+    """Reddit's own .json wraps items as {"data": {"children": [{"data": …}]}}.
+    Skip "more" placeholders (kind 'more') that carry no real content."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    children = data.get("children") if isinstance(data, dict) else None
+    if not isinstance(children, list):
+        return []
+    return [c.get("data", {}) for c in children
+            if isinstance(c, dict) and c.get("kind") != "more"]
+
+
+def within_range(item, date_range):
+    """Reddit .json can't filter by precise unix range server-side, so honor
+    --after/--before client-side against each item's created_utc."""
+    if not date_range:
+        return True
+    after, before = date_range
+    t = item.get("created_utc")
+    if after and (t is None or t < after):
+        return False
+    if before and (t is None or t >= before):
+        return False
+    return True
+
+
+def fetch_reddit_json(url, date_range=None):
+    """Third-tier fallback: Reddit's public .json. Lightweight only — Reddit
+    rate-limits/blocks unauthenticated hits, so jitter before the call and
+    back off exponentially on 429/5xx. Not a primary path."""
+    jitter_sleep(2, 5, "pacing Reddit public .json (lightweight fallback)")
+    sep = "&" if "?" in url else "?"
+    full = f"{url}{sep}raw_json=1"  # keep &<>" literal instead of HTML-escaped
+    items = backoff_retry(lambda: extract_reddit_json(reddit_json_get(full)),
+                          "Reddit public .json", attempts=3, base=8)
+    return [it for it in items if within_range(it, date_range)]
+
+
+def fetch_reddit_json_comments(post_id, limit, date_range=None):
+    """Reddit's comment .json returns [post_listing, comment_listing]; the
+    comments live in the second element. Same jitter/backoff as above."""
+    jitter_sleep(2, 5, "pacing Reddit public .json (lightweight fallback)")
+    url = f"{REDDIT}/comments/{post_id}.json?limit={limit}&sort=top&raw_json=1"
+
+    def go():
+        payload = reddit_json_get(url)
+        if not (isinstance(payload, list) and len(payload) >= 2):
+            return []
+        return extract_reddit_json(payload[1])
+
+    items = backoff_retry(go, "Reddit public .json comments", attempts=3, base=8)
+    return [it for it in items if within_range(it, date_range)]
+
+
+def with_fallback(arctic_url, pullpush_url, reddit_json_fn=None):
+    """Try Arctic Shift (with 422 retries), then Pullpush, then — only if both
+    archives fail and a builder was supplied — Reddit's own public .json.
+    Raise only if every available source fails."""
+    errors = []
     if arctic_url:
         try:
             return fetch_arctic(arctic_url), "arctic_shift"
         except Exception as e:
-            primary_error = str(e)
+            errors.append(f"Arctic Shift: {e}")
     try:
         return extract_items(http_json(pullpush_url)), "pullpush"
     except Exception as e:
-        parts = []
-        if primary_error:
-            parts.append(f"Arctic Shift: {primary_error}")
-        parts.append(f"Pullpush: {e}")
-        raise SystemExit("Both Reddit archive APIs failed. " + " | ".join(parts))
+        errors.append(f"Pullpush: {e}")
+    if reddit_json_fn is not None:
+        try:
+            return reddit_json_fn(), "reddit_json"
+        except Exception as e:
+            errors.append(f"Reddit .json: {e}")
+    raise SystemExit("All Reddit sources failed. " + " | ".join(errors))
 
 
 def usable_self_post(r):
@@ -180,22 +276,24 @@ def cmd_search(args):
             p_url = f"{PULLPUSH}/search/submission/?" + qs({
                 "q": args.query, "subreddit": sub, "size": limit,
                 "after": after, "before": before})
-            items, via = with_fallback(a_url, p_url)
+            rj = lambda s=sub: fetch_reddit_json(
+                f"{REDDIT}/r/{urllib.parse.quote(s)}/search.json?" + qs({
+                    "q": args.query, "restrict_sr": 1, "sort": "new",
+                    "limit": limit}), (after, before))
+            items, via = with_fallback(a_url, p_url, rj)
             all_items.extend(items)
             via_used.add(via)
         emit(all_items, "+".join(sorted(via_used)), "post", args.full, args.min_score, args.self_only)
     else:
         # Global keyword search: Arctic Shift refuses text queries without a
-        # subreddit/author filter, so this is Pullpush-only (no fallback).
+        # subreddit/author filter, so this goes Pullpush -> Reddit .json.
         p_url = f"{PULLPUSH}/search/submission/?" + qs({
             "q": args.query, "size": limit, "after": after, "before": before})
-        try:
-            items = extract_items(http_json(p_url))
-        except Exception as e:
-            raise SystemExit(
-                f"Global search needs Pullpush, which failed ({e}). "
-                "Retry with --subreddit <name> to use Arctic Shift instead.")
-        emit(items, "pullpush", "post", args.full, args.min_score, args.self_only)
+        rj = lambda: fetch_reddit_json(
+            f"{REDDIT}/search.json?" + qs({
+                "q": args.query, "sort": "new", "limit": limit}), (after, before))
+        items, via = with_fallback(None, p_url, rj)
+        emit(items, via, "post", args.full, args.min_score, args.self_only)
 
 
 def cmd_subreddit(args):
@@ -206,7 +304,10 @@ def cmd_subreddit(args):
         "after": after, "before": before})
     p_url = f"{PULLPUSH}/search/submission/?" + qs({
         "subreddit": args.name, "size": limit, "after": after, "before": before})
-    items, via = with_fallback(a_url, p_url)
+    rj = lambda: fetch_reddit_json(
+        f"{REDDIT}/r/{urllib.parse.quote(args.name)}/new.json?limit={limit}",
+        (after, before))
+    items, via = with_fallback(a_url, p_url, rj)
     emit(items, via, "post", args.full, args.min_score, args.self_only)
 
 
@@ -223,14 +324,27 @@ def cmd_comments(args):
         sys.exit("comments needs --post <id_or_url> or --query <text>")
     after, before = parse_date(args.after), parse_date(args.before)
     limit = min(args.limit, 100)
-    link_id = f"t3_{post_id_from(args.post)}" if args.post else None
+    post_id = post_id_from(args.post) if args.post else None
+    link_id = f"t3_{post_id}" if post_id else None
     a_url = f"{ARCTIC}/comments/search?" + qs({
         "link_id": link_id, "body": args.query, "subreddit": args.subreddit,
         "limit": limit, "sort": "desc", "after": after, "before": before})
     p_url = f"{PULLPUSH}/search/comment/?" + qs({
         "link_id": link_id, "q": args.query, "subreddit": args.subreddit,
         "size": limit, "after": after, "before": before})
-    items, via = with_fallback(a_url, p_url)
+    if post_id:
+        # A specific post's comments come straight from that post's .json.
+        rj = lambda: fetch_reddit_json_comments(post_id, limit, (after, before))
+    else:
+        # Keyword comment search: Reddit's search.json with type=comment,
+        # scoped to a subreddit when one was given.
+        base = (f"{REDDIT}/r/{urllib.parse.quote(args.subreddit)}/search.json"
+                if args.subreddit else f"{REDDIT}/search.json")
+        params = {"q": args.query, "type": "comment", "sort": "new", "limit": limit}
+        if args.subreddit:
+            params["restrict_sr"] = 1
+        rj = lambda: fetch_reddit_json(base + "?" + qs(params), (after, before))
+    items, via = with_fallback(a_url, p_url, rj)
     emit(items, via, "comment", args.full)
 
 

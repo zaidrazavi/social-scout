@@ -6,7 +6,7 @@ surfaces — no API keys, no paid services, no credentials in this repo:
 | Platform | What you get | Auth needed | Reliability |
 |---|---|---|---|
 | YouTube | search, video stats, transcripts, channel uploads | none | solid (yt-dlp) |
-| Reddit | keyword search, subreddit feeds, comments | none | solid (public archives, dual backend) |
+| Reddit | keyword search, subreddit feeds, comments | none | solid (Arctic Shift → Pullpush archives, with Reddit's own `.json` as a lightweight last-resort fallback) |
 | Instagram | reel/post caption, like/comment/view counts, top comments, video + transcript, hashtag discovery | **your own spare account** in the scout browser | good, session-based |
 | TikTok | video caption, like/comment/share/view counts, hashtags, top comments, video + transcript, trending hashtags | **your own spare account** in the scout browser (trending needs no login) | good, session-based |
 | Quora | question + visible answer text on a topic | none | ⚠️ **best-effort only** |
@@ -126,7 +126,8 @@ accounts are mandatory, not optional.
 | "No active Instagram/TikTok login" | log into your spare account in the scout Chrome window (one-time per machine) |
 | IG/TikTok command hits a captcha / verification wall | open the scout window, complete the check by hand, browse a minute like a human, retry |
 | YouTube commands failing | `pip install -U yt-dlp` (extractor breakage is almost always fixed upstream), then rerun the doctor |
-| Reddit global search fails | Pullpush (the only backend able to search all of Reddit) is down — retry with specific subreddits, which use Arctic Shift |
+| Reddit global search fails | Pullpush (the archive that searches all of Reddit) is down; the code then tries Reddit's own `.json`, but that's a lightweight fallback Reddit may block — retry with specific `--subreddit` names (which also use Arctic Shift) |
+| "Reddit is blocking this network" / all Reddit sources failed | both archives were down AND Reddit's `.json` last-resort tier was rate-limited/blocked (common on datacenter/VPN IPs). Wait and retry, or run from a residential connection; the `.json` tier is intentionally not for bulk use |
 | Quora returns nothing | expected occasionally — it's best-effort web search; retry later or broaden the topic |
 | Web reader slow or throttled | free Jina tier is ~20 req/min; set `JINA_API_KEY`, or pass `--local` for direct fetching |
 | "No transcript possible" | video has no native captions and local Whisper found no speech (music-only/silent), or `faster-whisper` isn't installed (`pip install -r requirements.txt`) |

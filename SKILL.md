@@ -82,12 +82,20 @@ reason; don't fight the caps.
 
 ## Platform quirks worth knowing
 
-1. **Global Reddit keyword search has no fallback** (Pullpush-only; Arctic
-   Shift needs a subreddit/author filter). Prefer `--subreddit` lists.
+1. **Reddit source order is Arctic Shift → Pullpush → Reddit's own `.json`.**
+   The third tier (Reddit's public `.json`) is a **lightweight last resort**,
+   not a primary path — it only fires when both archives fail. Reddit
+   rate-limits/blocks unauthenticated `.json`, especially from datacenter/VPN
+   IPs, so it jitters + backs off and may still return a clear "Reddit is
+   blocking this network" error. Don't lean on it for bulk work. For global
+   keyword search Arctic Shift is skipped (it needs a subreddit/author
+   filter), so that path is Pullpush → Reddit `.json`; `--subreddit` lists
+   still give the most reliable searches.
 2. **Arctic Shift 422s under load** — scripts retry then fall back; don't
    hammer.
-3. **Archive scores are snapshots** — very recent Reddit posts show
-   near-zero scores; don't report them as live counts.
+3. **Archive scores are snapshots; Reddit `.json` is live.** Very recent
+   posts show near-zero scores via the archives — don't report those as live
+   counts. If a result's `"via"` is `reddit_json`, those numbers ARE live.
 4. **YouTube bot checks are intermittent** — scripts auto-retry with an
    alternate client; persistent failure → `pip install -U yt-dlp`.
 5. **IG view counts**: Instagram exposes `play_count` for reels; carousels
