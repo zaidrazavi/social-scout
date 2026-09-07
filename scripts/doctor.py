@@ -210,6 +210,48 @@ def check_amazon():
     return "WARN", "fetched a page but no product title — Amazon markup may have changed"
 
 
+def check_meta_ads():
+    """Load the public Ad Library in the scout browser and confirm it renders.
+    Needs the scout browser running (no Facebook login required)."""
+    import browser
+    if not browser.is_running():
+        return "WARN", ("needs the scout browser — start it with "
+                        "python scripts/browser.py launch (no login needed)")
+    tab = browser.Browser().page(
+        "https://www.facebook.com/ads/library/?active_status=active"
+        "&ad_type=all&country=US&q=soap&media_type=all", settle=8)
+    try:
+        title = tab.eval("document.title") or ""
+        url = (tab.eval("location.href") or "").lower()
+    finally:
+        tab.close()
+    if "login" in url or "checkpoint" in url:
+        return "WARN", "Meta bounced to a login/checkpoint wall — retry later"
+    if "Ad Library" in title:
+        return True, "Ad Library renders in the scout browser"
+    return "WARN", f"loaded but unexpected page title ('{title[:40]}')"
+
+
+def check_google_trends():
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        return False, ("pytrends not installed — Google Trends tools won't "
+                       "work. Fix: pip install -r requirements.txt")
+    try:
+        pt = TrendReq(hl="en-US", tz=360)
+        pt.build_payload(["test"], timeframe="today 3-m")
+        df = pt.interest_over_time()
+    except Exception as e:
+        msg = str(e)
+        if "429" in msg or "rate" in msg.lower():
+            return "WARN", "Google Trends rate-limited right now — try again later"
+        return "WARN", f"Google Trends request failed ({msg[:60]}); often transient"
+    if df is not None and not df.empty:
+        return True, "pytrends returned interest data"
+    return "WARN", "pytrends responded but with no data — try again later"
+
+
 # --- optional extras -------------------------------------------------------
 
 def check_whisper():
@@ -243,6 +285,8 @@ CHECKS = [
     ("Web reader", check_webread, "web"),
     ("Quora discovery (best-effort)", check_quora_discovery, "quora"),
     ("Amazon product pages", check_amazon, "amazon"),
+    ("Meta Ad Library", check_meta_ads, "meta"),
+    ("Google Trends (pytrends)", check_google_trends, "gtrends"),
     ("Local Whisper transcripts", check_whisper, "optional"),
 ]
 
@@ -297,6 +341,21 @@ def verdicts(r):
     else:
         lines.append(("Amazon", "LIMITED — product pages blocked right now; "
                                 "retry later or via the scout browser"))
+
+    meta = r.get("meta", ["FAIL"])
+    if all(s == "OK" for s in meta):
+        lines.append(("Meta Ad Library", "READY (needs scout browser, no login)"))
+    else:
+        lines.append(("Meta Ad Library", "NOT READY — start the scout browser "
+                                         "(public, no Facebook login needed)"))
+
+    gt = r.get("gtrends", ["FAIL"])
+    if all(s == "OK" for s in gt):
+        lines.append(("Google Trends", "READY"))
+    elif any(s == "FAIL" for s in gt):
+        lines.append(("Google Trends", "NOT READY — pip install -r requirements.txt"))
+    else:
+        lines.append(("Google Trends", "RATE-LIMITED right now — use sparingly, retry later"))
     return lines, ok("youtube") and any(reddit) and ok("web")
 
 

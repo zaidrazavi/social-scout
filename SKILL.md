@@ -52,6 +52,12 @@ on" something — offer a manual re-run instead.
 | "1-star reviews for this product" | `python scripts/amazon.py reviews <url> --stars 1` |
 | "what are people saying about this product on Amazon" | `python scripts/amazon.py reviews <url> --sort helpful` |
 | "Amazon product info" | `python scripts/amazon.py product <url>` |
+| "active ads for handmade soap" / "competitor ads on Facebook" | `python scripts/meta_ads.py search "handmade soap"` |
+| "all ads from this Facebook page" | `python scripts/meta_ads.py page "PageName"` |
+| "Google Trends for handmade soap" / "is this keyword trending" | `python scripts/google_trends.py interest "handmade soap"` |
+| "compare these keywords on Google Trends" | `python scripts/google_trends.py compare "soap,candles,bath bombs"` |
+| "related searches for handmade soap" | `python scripts/google_trends.py related "handmade soap"` |
+| "where is handmade soap trending" | `python scripts/google_trends.py by_region "handmade soap"` |
 | "read this webpage / get this URL's content" | `python scripts/webread.py read <url>` |
 | "is the scraper working / doctor / health check" | `python scripts/doctor.py` |
 
@@ -120,6 +126,14 @@ reason; don't fight the caps.
    IG/TikTok) — the tool returns a clear message if not. Amazon bot-blocks
    scripted requests, so both commands lean on the running scout browser;
    `--stars 1` surfaces complaints/pain points, `--stars 5` what people love.
+10. **Meta Ad Library** needs the scout browser running but **no Facebook
+    login** (it's public). Platforms (FB/IG) are icon-only on the summary card
+    and usually can't be read — the output says so. Longer `started_running`
+    dates ≈ winning ads. Auto-launches the scout browser if it's down.
+11. **Google Trends** (via pytrends) rate-limits hard — use sparingly; on a
+    429 it backs off then returns a clear "rate-limited, retry later" message.
+    Numbers are **relative interest 0-100, not absolute search volume**;
+    `rising` related queries (big % jumps) are the emerging-trend signal.
 
 ## Presenting results
 

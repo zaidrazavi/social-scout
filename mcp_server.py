@@ -402,6 +402,76 @@ tool(
     gate=("amazon", False),
 )
 
+# ---- Meta Ad Library (public; needs the scout browser running, no login) ----
+tool(
+    "meta_ads_search",
+    "Search Meta Ad Library for active Facebook/Instagram ads by keyword. Shows "
+    "ad text, page name, how long the ad has been running, and media type. "
+    "Longer-running ads are likely winners. Public — no Facebook login needed.",
+    _schema({"query": STR, "country": {**STR, "default": "US"},
+             "max_ads": {**INT, "default": 20}}, ["query"]),
+    lambda a: ["meta_ads.py", "search", a["query"],
+               "--country", str(a.get("country", "US")),
+               "--max-ads", str(a.get("max_ads", 20))],
+    gate=("meta", False),
+    timeout=300,
+)
+tool(
+    "meta_ads_page",
+    "Get active ads from a specific Facebook/Instagram advertiser (pass a page "
+    "name, a facebook.com URL, or a numeric page id). Use to analyze a "
+    "competitor's current ad strategy. Public — no Facebook login needed.",
+    _schema({"page": STR, "country": {**STR, "default": "US"},
+             "max_ads": {**INT, "default": 20}}, ["page"]),
+    lambda a: ["meta_ads.py", "page", a["page"],
+               "--country", str(a.get("country", "US")),
+               "--max-ads", str(a.get("max_ads", 20))],
+    gate=("meta", False),
+    timeout=300,
+)
+
+# ---- Google Trends (pytrends, direct HTTP — no browser gate) ----
+tool(
+    "google_trends_interest",
+    "Get Google Trends interest over time for a keyword — weekly search "
+    "interest scores (0-100, relative not absolute volume). No login.",
+    _schema({"keyword": STR, "timeframe": {**STR, "default": "today 3-m"},
+             "geo": {**STR, "default": ""}}, ["keyword"]),
+    lambda a: ["google_trends.py", "interest", a["keyword"],
+               "--timeframe", str(a.get("timeframe", "today 3-m")),
+               "--geo", str(a.get("geo", ""))],
+)
+tool(
+    "google_trends_compare",
+    "Compare Google Trends interest for up to 5 keywords (comma-separated) side "
+    "by side — shows which terms are trending higher. No login.",
+    _schema({"keywords": STR, "timeframe": {**STR, "default": "today 3-m"},
+             "geo": {**STR, "default": ""}}, ["keywords"]),
+    lambda a: ["google_trends.py", "compare", a["keywords"],
+               "--timeframe", str(a.get("timeframe", "today 3-m")),
+               "--geo", str(a.get("geo", ""))],
+)
+tool(
+    "google_trends_related",
+    "Find related and rising search queries for a keyword on Google Trends. "
+    "Rising queries surface emerging trends. No login.",
+    _schema({"keyword": STR, "geo": {**STR, "default": ""}}, ["keyword"]),
+    lambda a: ["google_trends.py", "related", a["keyword"],
+               "--geo", str(a.get("geo", ""))],
+)
+tool(
+    "google_trends_by_region",
+    "See where a keyword is most searched geographically (COUNTRY / REGION / "
+    "CITY). Useful for targeting decisions. No login.",
+    _schema({"keyword": STR,
+             "resolution": {**STR, "enum": ["COUNTRY", "REGION", "CITY"],
+                            "default": "COUNTRY"},
+             "geo": {**STR, "default": ""}}, ["keyword"]),
+    lambda a: ["google_trends.py", "by_region", a["keyword"],
+               "--resolution", str(a.get("resolution", "COUNTRY")),
+               "--geo", str(a.get("geo", ""))],
+)
+
 # ---- Health check ----
 tool(
     "health_check",

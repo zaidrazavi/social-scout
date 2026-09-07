@@ -20,3 +20,6 @@ mcp<2
 # (scripts/amazon.py). lxml is the fast parser backend BeautifulSoup uses.
 beautifulsoup4
 lxml
+# pytrends: unofficial Google Trends API for scripts/google_trends.py (pulls
+# pandas in as a dependency). Google Trends rate-limits hard — use sparingly.
+pytrends
