@@ -35,38 +35,287 @@ whole internet". Quora is web-search + page-reading and is explicitly
 **best-effort**: expect partial answers and occasional failures; never expect
 Reddit-level reliability from it.
 
-## Using with the Claude Desktop App (MCP Server)
+# 🖥️ Claude Desktop App Setup (MCP Server)
 
-**This is the recommended way for non-technical team members** — no terminal,
-no Claude Code. An included MCP server (`mcp_server.py`) exposes every
-social-scout capability as a tool the Claude Desktop App can call. You just
-ask Claude naturally ("get the top comments on this reel", "what's trending on
-TikTok for skincare") and it runs the right scraper for you.
+> This is the **complete, non-technical setup guide** and the single source of
+> truth for getting Social Scout working in the Claude Desktop App. If you're a
+> power user who wants the terminal / Claude Code path instead, skip down to
+> [Install (Claude Code / terminal)](#install-claude-code--terminal).
 
-Quick version:
+## What this does
 
-1. Install dependencies — double-click `install.bat` (Windows) or run
-   `bash install.sh` (Mac/Linux). Needs **Python 3.10+**.
-2. In Claude Desktop: **Settings → Developer → Edit Config**, and add:
+Once this is set up, you can use Instagram, TikTok, YouTube, Reddit, Quora, and
+any-webpage scraping **right inside the Claude Desktop App — just by talking to
+Claude normally.** No terminal, no code, no technical knowledge needed after
+the one-time setup below. You type "what's trending on TikTok for skincare" and
+Claude does the rest.
 
-   ```json
-   {
-     "mcpServers": {
-       "social-scout": {
-         "command": "python",
-         "args": ["C:\\path\\to\\social-scout\\mcp_server.py"]
-       }
-     }
-   }
-   ```
-   (Use `"python3"` and a `/Users/you/...` path on Mac. On Windows, double
-   every backslash in the path as shown.)
-3. Fully quit and reopen Claude Desktop.
+## Prerequisites
 
-Instagram/TikTok tools auto-open the scout browser and, the first time, ask
-you to log into your dedicated spare account in that window — a one-time step.
+| You need | Notes |
+|---|---|
+| **Python 3.11** | ⚠️ Use **3.11 specifically** — not 3.12 or 3.13 (they have compatibility issues with this tool). Windows: [python-3.11.9-amd64.exe](https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe) · Mac: [python-3.11.9-macos11.pkg](https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg) |
+| **Google Chrome** | Only needed for Instagram/TikTok. |
+| **Claude Desktop App** | Download from [claude.ai/download](https://claude.ai/download). |
 
-📖 **Full step-by-step, non-technical walkthrough: [SETUP_GUIDE.md](SETUP_GUIDE.md).**
+---
+
+## Step-by-step setup
+
+### Step 1 — Install Python 3.11
+
+**Windows**
+1. Download the `.exe` above and double-click it.
+2. ⚠️ **On the very first screen, tick the box "Add python.exe to PATH".** This
+   is the most-missed step — don't skip it.
+3. Click **Install Now** and wait for "Setup was successful".
+
+**Mac**
+1. Download the `.pkg` above and double-click it.
+2. Click **Continue → Continue → Agree → Install**, then enter your password.
+
+**Verify it worked** (open Command Prompt on Windows / Terminal on Mac):
+
+```
+# Windows
+python --version
+
+# Mac
+python3 --version
+```
+
+You should see `Python 3.11.9`.
+
+⚠️ **If a different version shows up (3.12, 3.13, etc.):** you have more than
+one Python installed. Find the 3.11 one and note its full path for Step 4:
+
+```
+# Windows — look for the Python311 line
+where python
+# typical path: C:\Users\USERNAME\AppData\Local\Programs\Python\Python311\python.exe
+
+# Mac
+which python3.11
+# typical path: /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11
+```
+
+### Step 2 — Install Social Scout
+
+**A) Unzip the folder** to a permanent location (not Downloads):
+
+- Windows: `C:\Users\USERNAME\Documents\social-scout`
+- Mac: `/Users/USERNAME/Documents/social-scout`
+
+**B) Install the dependencies:**
+
+- **Windows:** double-click **`install.bat`** inside the folder.
+- **Mac:** open Terminal and run:
+  ```
+  cd /Users/USERNAME/Documents/social-scout
+  chmod +x install.sh
+  ./install.sh
+  ```
+
+⚠️ **If you get a "pip not found" / "No module named pip" error:**
+
+```
+# Windows
+python -m ensurepip --upgrade
+
+# Mac
+python3.11 -m ensurepip --upgrade
+```
+
+Then run the installer again.
+
+### Step 3 — Quick verify the server runs
+
+From inside the social-scout folder:
+
+```
+# Windows
+python mcp_server.py
+
+# Mac
+python3.11 mcp_server.py
+```
+
+✅ **Expected:** the screen goes blank and the cursor just blinks. That means
+the server started correctly. Press **Ctrl+C** to stop it.
+
+⚠️ **If you see `ModuleNotFoundError`:** the dependencies landed on the wrong
+Python. Install them explicitly:
+
+```
+# Windows
+python -m pip install "mcp<2" --break-system-packages
+python -m pip install -r requirements.txt --break-system-packages
+
+# Mac
+python3.11 -m pip install "mcp<2" --break-system-packages
+python3.11 -m pip install -r requirements.txt --break-system-packages
+```
+
+### Step 4 — Connect it to Claude Desktop
+
+1. Open **Claude Desktop → Settings → Developer → Edit Config**.
+2. ⚠️ If VS Code opens in **"Restricted Mode"**, click **"Trust this window"** at
+   the top first — otherwise you can't save.
+3. Add this block right after the first `{`, **before** `"preferences"`:
+
+**Windows:**
+```json
+"mcpServers": {
+  "social-scout": {
+    "command": "C:\\Users\\USERNAME\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+    "args": ["C:\\Users\\USERNAME\\Documents\\social-scout\\mcp_server.py"]
+  }
+},
+```
+
+**Mac:**
+```json
+"mcpServers": {
+  "social-scout": {
+    "command": "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11",
+    "args": ["/Users/USERNAME/Documents/social-scout/mcp_server.py"]
+  }
+},
+```
+
+⚠️ **Critical details:**
+- Replace **USERNAME** with your real username (run `whoami` in CMD/Terminal if
+  unsure).
+- **Both** paths must be right — the `command` (your Python 3.11) **and** the
+  `args` (the `mcp_server.py` in your folder).
+- Windows paths use **double backslashes** `\\`.
+- Keep the **trailing comma** after the closing `}`.
+
+4. **Save** the file (`Ctrl+S` / `Cmd+S`).
+
+### Step 5 — Fully restart Claude Desktop
+
+⚠️ Closing the window is **not** enough — Claude keeps running in the
+background and won't reload the config. You must fully quit:
+
+**Windows**
+1. Close the Claude window (X).
+2. Click the **▲ up-arrow** in the system tray (bottom-right), right-click the
+   **Claude** icon → **Quit**.
+3. Reopen Claude Desktop.
+
+**Mac**
+1. Menu bar → **Claude → Quit Claude** (or **Cmd+Q**).
+2. Reopen Claude Desktop.
+
+### Step 6 — Confirm it's running
+
+1. Open **Settings → Developer** in Claude Desktop.
+2. **social-scout** should show a green/blue **"Running"** badge.
+3. ⚠️ If it says **"Failed"** or **"Server disconnected"**, the Python path in
+   your config is wrong. Re-check it with `where python` (Windows) /
+   `which python3.11` (Mac), fix the config, and fully restart again.
+
+### Step 7 — Test it
+
+Type this into Claude Desktop:
+
+> Run the social scout health check
+
+**YouTube, Reddit, Web reading, and Quora should show READY.** (Instagram and
+TikTok will show as needing login until you do Step 8.)
+
+### Step 8 — Instagram / TikTok first-time login
+
+Type into Claude Desktop:
+
+> Search Instagram for hashtags about skincare
+
+Here's what happens:
+1. A **Chrome window opens by itself** on your screen.
+2. Claude tells you to log in.
+3. ⚠️ **Log into your DEDICATED SPARE Instagram account** in that Chrome window
+   — **never your personal account.**
+4. Go back to Claude Desktop and send the same command again.
+5. Results appear! 🎉
+
+Same flow for TikTok — log into your spare TikTok account in that same Chrome
+window when asked.
+
+⚠️ **The rules that keep you safe:**
+- **Spare accounts only.** Scraping can get accounts banned — assume the spare
+  is expendable. Never use your personal or business account.
+- **Login is one-time.** Chrome remembers it on your machine.
+- **Sessions can expire** every 2–3 months — if that happens, just log in again
+  (takes ~2 minutes).
+
+---
+
+## Daily usage — just talk to Claude
+
+Once set up, type things like:
+
+- "Search Instagram for hashtags about handmade soap"
+- "Get stats and top comments for this reel [url]"
+- "What's trending on TikTok for skincare"
+- "Transcribe this TikTok [url]"
+- "Search YouTube for soap making tutorials"
+- "What is Reddit saying about natural skincare"
+- "What is Quora saying about soap business tips"
+- "Read this webpage for me: [url]"
+- "Run the social scout health check"
+
+---
+
+## Troubleshooting (Desktop App)
+
+| Problem | Fix |
+|---|---|
+| **"Server disconnected"** in Claude Desktop | Python path in the config is wrong. Run `where python` (Win) / `which python3.11` (Mac), put the correct full path in the config, then fully quit + reopen Desktop. |
+| **`ModuleNotFoundError: No module named 'anyio'`** (or `'mcp'`) | Dependencies aren't on the Python that Claude is using. Re-run `install.bat` / `install.sh`, or manually: `python -m pip install "mcp<2" -r requirements.txt --break-system-packages` (use `python3.11` on Mac). |
+| **"pip not found" / "No module named pip"** | Run `python -m ensurepip --upgrade` (Win) / `python3.11 -m ensurepip --upgrade` (Mac), then retry the installer. |
+| **VS Code opens in "Restricted Mode"** when editing the config | Click **"Trust this window"** at the top, then edit and save. |
+| **Still shows "Failed" after editing config** | You didn't fully quit. Check the **system tray** (Windows) or use **Cmd+Q** (Mac), then reopen. |
+| **Multiple Python versions installed** | Use the **full path** to Python 3.11 as the `command` in the config instead of just `"python"`. |
+| **Instagram/TikTok "scout browser not running"** | The MCP normally opens Chrome automatically. If it doesn't, run `python scripts/browser.py launch` from the social-scout folder. |
+| **Instagram "not logged in"** | Log into your spare account in the Chrome window that opened. One-time per machine. |
+| **Quora returns nothing** | Normal — Quora is best-effort. Try again or broaden the topic. |
+| **YouTube "Sign in to confirm you're not a bot"** | Run `pip install -U yt-dlp` in CMD/Terminal. |
+| **"Python was not found"** | Python isn't installed or isn't on PATH. Reinstall Python 3.11 with **"Add python.exe to PATH"** ticked. |
+
+---
+
+## Team setup via Zoom call — checklist
+
+For whoever is running the onboarding call, tick these off:
+
+- [ ] Member is screen sharing
+- [ ] Python 3.11 installed, version verified (`python --version` → 3.11.9)
+- [ ] Folder unzipped to the correct location
+- [ ] `install.bat` / `install.sh` ran successfully
+- [ ] `mcp_server.py` test passed (blank blinking screen)
+- [ ] Config JSON pasted with **both** paths correct
+- [ ] VS Code in trusted mode (if it prompted)
+- [ ] Claude Desktop **fully quit** and reopened
+- [ ] Settings → Developer shows **"Running"**
+- [ ] Health check returns YouTube / Reddit READY
+- [ ] Instagram command → Chrome opened → spare account logged in
+- [ ] Instagram command retried → results returned
+- [ ] TikTok logged in (if the member needs it)
+
+---
+
+## How it works (quick architecture note)
+
+The MCP server runs **locally on your own machine** — Claude Desktop launches
+`mcp_server.py` as a subprocess. It's a thin wrapper around the existing Python
+scripts: when you ask Claude about Instagram, Claude calls the MCP tool, which
+runs the script **on your laptop** (not in the cloud). That's why a Chrome
+window can open on your screen and why your logins persist between sessions.
+YouTube, Reddit, Quora, and web reading don't need Chrome or any login — they
+work through public sources.
+
+---
 
 The terminal / Claude Code path below is still fully supported for power users.
 
