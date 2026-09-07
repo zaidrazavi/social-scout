@@ -11,3 +11,8 @@ faster-whisper
 # back to plain yt-dlp if it's missing — but recommended. The <0.16 pin
 # matches the range yt-dlp supports; a newer curl_cffi is ignored by yt-dlp.
 curl_cffi>=0.10,<0.16
+# mcp: powers mcp_server.py, which exposes social-scout to the Claude Desktop
+# App (no terminal needed). Only required for the Desktop-App path — the
+# scripts/ CLIs work without it. Pinned <2 for the stable low-level server
+# API this server targets; needs Python 3.10+.
+mcp<2

@@ -35,7 +35,42 @@ whole internet". Quora is web-search + page-reading and is explicitly
 **best-effort**: expect partial answers and occasional failures; never expect
 Reddit-level reliability from it.
 
-## Install
+## Using with the Claude Desktop App (MCP Server)
+
+**This is the recommended way for non-technical team members** — no terminal,
+no Claude Code. An included MCP server (`mcp_server.py`) exposes every
+social-scout capability as a tool the Claude Desktop App can call. You just
+ask Claude naturally ("get the top comments on this reel", "what's trending on
+TikTok for skincare") and it runs the right scraper for you.
+
+Quick version:
+
+1. Install dependencies — double-click `install.bat` (Windows) or run
+   `bash install.sh` (Mac/Linux). Needs **Python 3.10+**.
+2. In Claude Desktop: **Settings → Developer → Edit Config**, and add:
+
+   ```json
+   {
+     "mcpServers": {
+       "social-scout": {
+         "command": "python",
+         "args": ["C:\\path\\to\\social-scout\\mcp_server.py"]
+       }
+     }
+   }
+   ```
+   (Use `"python3"` and a `/Users/you/...` path on Mac. On Windows, double
+   every backslash in the path as shown.)
+3. Fully quit and reopen Claude Desktop.
+
+Instagram/TikTok tools auto-open the scout browser and, the first time, ask
+you to log into your dedicated spare account in that window — a one-time step.
+
+📖 **Full step-by-step, non-technical walkthrough: [SETUP_GUIDE.md](SETUP_GUIDE.md).**
+
+The terminal / Claude Code path below is still fully supported for power users.
+
+## Install (Claude Code / terminal)
 
 1. Prerequisites: **Python 3.8+**, **Google Chrome**, then:
    ```
