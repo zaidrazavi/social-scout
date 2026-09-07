@@ -191,6 +191,25 @@ def check_quora_discovery():
     return False, "web search returned no Quora URLs"
 
 
+def check_amazon():
+    """Fetch a long-lived bestseller's public product page. amazon.py's own
+    direct→scout-browser fallback handles the fetch; a readable product title
+    means Amazon is reachable. A block is a WARN, not a hard failure — Amazon
+    rate-limits, and reviews additionally need an Amazon login."""
+    import amazon
+    # AmazonBasics AA batteries — a stable ASIN that's been listed for years.
+    url = "https://www.amazon.com/dp/B00MNV8E0C"
+    try:
+        html = amazon.fetch_html(url)
+    except RuntimeError as e:
+        return "WARN", (f"Amazon not reachable right now ({str(e)[:70]}…). It "
+                        "rate-limits; retry later or start the scout browser")
+    title = amazon._text(amazon._first(amazon.bs(html), ["#productTitle"]))
+    if title:
+        return True, f'product page OK ("{title[:32]}…"); reviews need Amazon login'
+    return "WARN", "fetched a page but no product title — Amazon markup may have changed"
+
+
 # --- optional extras -------------------------------------------------------
 
 def check_whisper():
@@ -223,6 +242,7 @@ CHECKS = [
     ("TikTok Creative Center (trending)", check_creative_center, "tiktok_cc"),
     ("Web reader", check_webread, "web"),
     ("Quora discovery (best-effort)", check_quora_discovery, "quora"),
+    ("Amazon product pages", check_amazon, "amazon"),
     ("Local Whisper transcripts", check_whisper, "optional"),
 ]
 
@@ -271,6 +291,12 @@ def verdicts(r):
     lines.append(("Web reading", "READY" if ok("web") else "BROKEN"))
     lines.append(("Quora", "BEST-EFFORT (working)" if ok("quora")
                   else "BEST-EFFORT (currently down — expected occasionally)"))
+    amazon = r.get("amazon", ["FAIL"])
+    if all(s == "OK" for s in amazon):
+        lines.append(("Amazon", "READY (product info; reviews need Amazon login)"))
+    else:
+        lines.append(("Amazon", "LIMITED — product pages blocked right now; "
+                                "retry later or via the scout browser"))
     return lines, ok("youtube") and any(reddit) and ok("web")
 
 

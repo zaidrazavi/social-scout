@@ -48,6 +48,10 @@ on" something — offer a manual re-run instead.
 | "transcribe this TikTok" | `python scripts/tiktok.py transcript <url>` |
 | "trending TikTok hashtags (for niche N)" | `python scripts/tiktok.py hashtags ["N"] [--days 7\|30\|120]` |
 | "what does Quora say about T" | `python scripts/quora.py search "T"` |
+| "reviews for this Amazon product" | `python scripts/amazon.py reviews <url>` |
+| "1-star reviews for this product" | `python scripts/amazon.py reviews <url> --stars 1` |
+| "what are people saying about this product on Amazon" | `python scripts/amazon.py reviews <url> --sort helpful` |
+| "Amazon product info" | `python scripts/amazon.py product <url>` |
 | "read this webpage / get this URL's content" | `python scripts/webread.py read <url>` |
 | "is the scraper working / doctor / health check" | `python scripts/doctor.py` |
 
@@ -110,6 +114,12 @@ reason; don't fight the caps.
    errors) and that the first run may take a bit while the model downloads.
 8. **Reddit output reports `"via"`**, transcripts report `# source:` — pass
    these through when relevant.
+9. **Amazon**: `product` (public `/dp/` page) needs no login. `reviews` are
+   gated behind an Amazon **sign-in wall**, so they need an Amazon account
+   logged into the scout browser once (a spare is safest; it persists like
+   IG/TikTok) — the tool returns a clear message if not. Amazon bot-blocks
+   scripted requests, so both commands lean on the running scout browser;
+   `--stars 1` surfaces complaints/pain points, `--stars 5` what people love.
 
 ## Presenting results
 

@@ -367,6 +367,41 @@ tool(
     lambda a: ["webread.py", "read", a["url"], "--max-chars", str(a.get("max_chars", 20000))],
 )
 
+# ---- Amazon (product public; reviews need an Amazon login in scout browser) ----
+# Both gate on the scout browser being RUNNING (Amazon bot-blocks scripted
+# requests; a real Chrome gets through). No login is enforced by the gate —
+# amazon.py itself detects Amazon's review sign-in wall and returns a clear
+# "log into Amazon in the scout browser" message when needed.
+tool(
+    "amazon_reviews",
+    "Pull Amazon product reviews. Filter by star rating (1-5 or all), sort by "
+    "most helpful or most recent. Use stars=1 for pain points / complaints, "
+    "stars=5 for what customers love. Needs an Amazon account logged into the "
+    "scout browser (a spare is safest) — it'll tell you if you're not.",
+    _schema({"url": STR,
+             "stars": {**STR, "enum": ["1", "2", "3", "4", "5", "all"],
+                       "default": "all"},
+             "sort": {**STR, "enum": ["helpful", "recent"], "default": "helpful"},
+             "pages": {**INT, "default": 3},
+             "max_reviews": {**INT, "default": 30}}, ["url"]),
+    lambda a: ["amazon.py", "reviews", a["url"],
+               "--stars", str(a.get("stars", "all")),
+               "--sort", str(a.get("sort", "helpful")),
+               "--pages", str(a.get("pages", 3)),
+               "--max-reviews", str(a.get("max_reviews", 30))],
+    gate=("amazon", False),
+    timeout=600,
+)
+tool(
+    "amazon_product",
+    "Get Amazon product metadata — title, price, overall rating, rating "
+    "breakdown, and feature bullet points. Quick competitive intelligence "
+    "without pulling full reviews. No login needed.",
+    _schema({"url": STR}, ["url"]),
+    lambda a: ["amazon.py", "product", a["url"]],
+    gate=("amazon", False),
+)
+
 # ---- Health check ----
 tool(
     "health_check",

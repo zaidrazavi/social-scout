@@ -16,3 +16,7 @@ curl_cffi>=0.10,<0.16
 # scripts/ CLIs work without it. Pinned <2 for the stable low-level server
 # API this server targets; needs Python 3.10+.
 mcp<2
+# beautifulsoup4 + lxml: HTML parsing for the Amazon reviews/product scraper
+# (scripts/amazon.py). lxml is the fast parser backend BeautifulSoup uses.
+beautifulsoup4
+lxml
