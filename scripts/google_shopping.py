@@ -43,25 +43,23 @@ EXTRACTOR = r"""
   const isProdLink = h => /^https?:/.test(h) &&
     !/google\.[a-z.]+\/(search|preferences|advanced_search|intl|policies|support|setprefs)/.test(h);
   const out = [], seen = new Set();
-  // Anchor on the PRICE leaf and climb to a BOUNDED card (so we get one tile,
-  // not the whole results region), then read the product fields from it.
+  // Anchor on each decimal-PRICE leaf and climb to a BOUNDED card (a single
+  // product tile, not the whole grid). udm=28 tiles often have NO anchor at
+  // all (JS-handled clicks), so a product link is captured when present but
+  // never required.
   const priceLeaves = [...document.querySelectorAll("span,div,b,strong")]
     .filter(e => e.children.length === 0 && PRICE.test((e.textContent || "").trim()));
   for (const pn of priceLeaves) {
     if (out.length >= MAX) break;
-    let card = pn;
-    for (let i = 0; i < 9 && card.parentElement; i++) {
+    let card = pn, txt = "";
+    for (let i = 0; i < 8 && card.parentElement; i++) {
       card = card.parentElement;
-      const t = card.innerText || "";
-      if ([...card.querySelectorAll("a[href]")].some(a => isProdLink(a.href))
-          && t.length >= 30 && t.length <= 500) break;
+      txt = (card.innerText || "").trim();
+      // a real tile has a few short lines (title/price/seller); stop once the
+      // card has grown into a multi-line block but before it becomes the grid
+      if (txt.includes("\n") && txt.length >= 25) break;
     }
-    const txt = (card.innerText || "").trim();
-    if (txt.length > 600) continue;  // overshot into a big container
-    const a = [...card.querySelectorAll("a[href]")].find(x => isProdLink(x.href));
-    if (!a) continue;
-    const href = a.href;
-    const img0 = card.querySelector("img");
+    if (!txt || txt.length > 400) continue;  // too small or overshot into grid
     const pm = txt.match(PRICE);
     if (!pm) continue;
     const lines = txt.split("\n").map(s => s.trim()).filter(Boolean);
@@ -70,13 +68,19 @@ EXTRACTOR = r"""
                                   && !/^\d(\.\d)?\s*(star|out of)/i.test(l));
     if (!title || seen.has(title) || NAV.test(title)) continue;
     seen.add(title);
+    const a = [...card.querySelectorAll("a[href]")].find(x => isProdLink(x.href));
+    const href = a ? a.href : null;
+    const img0 = card.querySelector("img");
     const rating = (txt.match(/(\d(?:\.\d)?)\s*(?:star|out of 5)/i) || [])[1] || null;
     const reviews = (txt.match(/([\d,]+)\s*(?:reviews?|ratings?)/i) || [])[1] || null;
     // seller = a short line after the price that isn't the title
     let seller = null;
     for (const l of lines) {
-      if (l !== title && !PRICE.test(l) && l.length <= 40
-          && !/star|review|rating|shipping|free|delivery/i.test(l)) { seller = l; break; }
+      if (l === title || PRICE.test(l) || l.length > 40) continue;
+      // skip price/discount/unit/rating/shipping noise — keep a real store name
+      if (/star|review|rating|shipping|free|delivery|%|\/ct|\boff\b|\bsale\b|\bper\b|[$£€₹]/i.test(l)) continue;
+      if (!/[a-z]/i.test(l)) continue;  // must contain letters
+      seller = l; break;
     }
     const shipping = (txt.match(/(free (?:delivery|shipping)|[$£€₹][\d.,]+ (?:delivery|shipping))/i) || [])[0] || null;
     out.push({
@@ -96,7 +100,10 @@ EXTRACTOR = r"""
 
 
 def build_url(query, country, min_price=None, max_price=None):
-    params = {"q": query, "tbm": "shop", "hl": "en", "gl": country}
+    # udm=28 is Google's current Shopping surface — unlike the legacy tbm=shop
+    # it renders product prices as real text nodes, which makes extraction far
+    # more reliable.
+    params = {"q": query, "udm": "28", "hl": "en", "gl": country}
     tbs = []
     if min_price is not None:
         tbs.append(f"price:1,ppr_min:{min_price}")

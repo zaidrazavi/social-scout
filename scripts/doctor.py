@@ -256,7 +256,7 @@ def check_trustpilot():
     """Trustpilot 403s scripts, so this really tests the scout-browser path."""
     import trustpilot
     try:
-        pp = trustpilot.fetch_next_data("https://www.trustpilot.com/review/amazon.com")
+        pp, _ = trustpilot.fetch_next_data("https://www.trustpilot.com/review/amazon.com")
     except RuntimeError as e:
         return "WARN", (f"Trustpilot not reachable ({str(e)[:60]}…) — it blocks "
                         "scripts; start the scout browser and retry")
@@ -282,23 +282,34 @@ def check_pinterest():
     import browser
     if not browser.is_running():
         return "WARN", "needs the scout browser (python scripts/browser.py launch)"
+    if browser.Browser().pinterest_logged_in():
+        return True, "logged in — full per-keyword trends available"
     import pinterest_trends as pt
     trends = pt.parse_spotlight(pt.load_trends("US"))
     if trends:
-        return True, f"spotlight parsed ({len(trends)} trending terms)"
+        return True, (f"public spotlight only ({len(trends)} terms) — log into "
+                      "Pinterest in the scout browser for per-keyword trends")
     return "WARN", "loaded but no spotlight parsed — Pinterest may have redesigned"
 
 
 def check_twitter():
-    """Best-effort — probe Nitter mirrors; report if any serve tweets."""
+    """Login upgrades Twitter to full data; without it, Nitter/web fallbacks."""
+    import browser
+    if browser.is_running():
+        if browser.Browser().twitter_logged_in():
+            return True, "logged into X — full tweet data + engagement available"
+        return True, ("limited — no X login; uses Nitter/web-search fallbacks. "
+                      "Log into a spare X account in the scout browser for full "
+                      "tweet data")
+    # no scout browser: probe Nitter mirrors
     import urllib.parse
     import twitter
     path = "/search?" + urllib.parse.urlencode({"q": "news", "f": "tweets"})
     tweets, source = twitter.try_nitter(path, 3)
     if tweets:
-        return True, f"Nitter mirror working ({source})"
-    return "WARN", ("all Nitter mirrors down/challenged — search still tries "
-                    "x.com + web-search fallbacks (best-effort)")
+        return True, f"Nitter mirror working ({source}); no browser for full data"
+    return "WARN", ("no scout browser and all Nitter mirrors down — web-search "
+                    "fallback only (best-effort)")
 
 
 # --- optional extras -------------------------------------------------------
@@ -412,12 +423,14 @@ def verdicts(r):
 
     lines.append(("Trustpilot", "READY" if ok("trustpilot")
                   else "LIMITED — blocks scripts; needs the scout browser"))
-    lines.append(("Google Shopping", "READY (best-effort)" if ok("shopping")
-                  else "BEST-EFFORT — obfuscated/flaky; may return little"))
-    lines.append(("Pinterest Trends", "READY (needs scout browser)" if ok("pinterest")
-                  else "NOT READY — start the scout browser (no login)"))
-    lines.append(("Twitter/X", "BEST-EFFORT (a Nitter mirror is up)" if ok("twitter")
-                  else "BEST-EFFORT (Nitter down — x.com/web-search fallbacks only)"))
+    lines.append(("Google Shopping", "READY (scout browser)" if ok("shopping")
+                  else "LIMITED — Google's Shopping layout not parsing right now"))
+    lines.append(("Pinterest Trends", "READY (full if logged in, else public "
+                  "spotlight)" if ok("pinterest")
+                  else "NOT READY — start the scout browser (login optional)"))
+    lines.append(("Twitter/X", "READY (full if X logged in, else best-effort "
+                  "via Nitter/web)" if ok("twitter")
+                  else "BEST-EFFORT (no browser + Nitter down — web-search only)"))
     return lines, ok("youtube") and any(reddit) and ok("web")
 
 

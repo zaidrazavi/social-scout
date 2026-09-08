@@ -114,7 +114,66 @@ def cmd_trending(args):
     })
 
 
+def pinterest_session():
+    """Scout Browser if running AND Pinterest is logged in, else None. Never
+    launches just to check — login is optional (it upgrades keyword data)."""
+    try:
+        import browser
+        if not browser.is_running():
+            return None
+        b = browser.attach()
+        return b if b.pinterest_logged_in() else None
+    except Exception:
+        return None
+
+
+def keyword_trends(b, query, geo):
+    """Logged-in tier: Pinterest's per-keyword trends page. Returns a list of
+    related trend terms (with growth where shown), or None if nothing parsed.
+    Resilient innerText parsing — the numeric interest chart is an SVG and not
+    reliably text-extractable, so we surface related terms, not the graph."""
+    url = "https://trends.pinterest.com/search?" + urllib.parse.urlencode(
+        {"q": query, "geo": geo})
+    tab = b.page(url, settle=9)
+    try:
+        landed = (tab.eval("location.href") or "").lower()
+        if "login" in landed:
+            return None
+        tab.eval("window.scrollTo(0, document.body.scrollHeight)")
+        jitter_sleep(2, 4, "loading Pinterest keyword trends")
+        body = tab.eval("document.body.innerText") or ""
+    finally:
+        tab.close()
+    entries = parse_spotlight(body)  # keyword page also uses "% MoM • Popular in"
+    related = [{"term": e["term"], "growth": e["growth"],
+                "categories": e["categories"]} for e in entries
+               if e["term"].lower() != query.lower()]
+    return related or None
+
+
 def cmd_search(args):
+    # Tier 0 (best): logged-in per-keyword trends, if a Pinterest account is
+    # logged into the scout browser. Optional — falls back to public spotlight.
+    session = pinterest_session()
+    if session is not None:
+        try:
+            related = keyword_trends(session, args.query, args.geo)
+        except Exception as e:
+            warn(f"logged-in keyword trends failed ({e}); using public spotlight")
+            related = None
+        if related:
+            emit({
+                "query": args.query, "geo": args.geo, "timeframe": args.timeframe,
+                "source": "logged-in (per-keyword)",
+                "note": ("Per-keyword related trends from a logged-in Pinterest "
+                         "session. The interest-over-time chart is an SVG and "
+                         "isn't text-extractable; these are relative signals."),
+                "related_trends": related,
+            })
+            return
+        warn("logged in but no per-keyword data parsed — using public spotlight")
+
+    # Degraded (no login): public regional spotlight filtered to the query.
     body = load_trends(args.geo, args.query)
     trends = parse_spotlight(body)
     words = [w.lower() for w in args.query.split()]
@@ -126,10 +185,12 @@ def cmd_search(args):
         "query": args.query,
         "geo": args.geo,
         "timeframe": args.timeframe,
+        "source": "public spotlight (not logged in)",
         "note": ("BEST-EFFORT: Pinterest gates per-keyword Trends behind a "
-                 "login, so this is the public regional spotlight. "
-                 "'related_trends' are spotlight entries matching your query; "
-                 "'all_spotlight' is the full list for context. Relative "
+                 "login, so this is the public regional spotlight. Log into a "
+                 "Pinterest account in the scout browser for full per-keyword "
+                 "trend data. 'related_trends' are spotlight entries matching "
+                 "your query; 'all_spotlight' is the full list. Relative "
                  "signals, not exact volumes."),
         "related_trends": [{"term": t["term"], "trend": t["trend"],
                             "growth": t["growth"]} for t in matches] or None,

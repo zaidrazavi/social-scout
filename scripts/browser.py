@@ -196,16 +196,30 @@ class Browser:
         finally:
             tab.close()
 
-    def logged_in(self, domain):
-        """A live session cookie for the domain (IG and TikTok both call
-        theirs 'sessionid') is the login marker — no page scrape needed."""
+    def logged_in(self, domain, cookie_names=("sessionid",), value_ok=None):
+        """A live session cookie for the domain is the login marker — no page
+        scrape needed. IG and TikTok both name theirs 'sessionid' (the default);
+        other platforms differ, so callers can pass the cookie name(s) and an
+        optional value check (e.g. Pinterest sets '_auth=0' when logged out, so
+        it needs value_ok=lambda v: v != '0')."""
         now = time.time()
         for c in self.all_cookies():
-            if (domain in c.get("domain", "") and c.get("name") == "sessionid"
+            if (domain in c.get("domain", "") and c.get("name") in cookie_names
                     and c.get("value")
+                    and (value_ok is None or value_ok(c["value"]))
                     and (c.get("expires", -1) in (-1, 0) or c["expires"] > now)):
                 return True
         return False
+
+    def twitter_logged_in(self):
+        """X's session token 'auth_token' is absent when logged out."""
+        return (self.logged_in("x.com", ("auth_token",))
+                or self.logged_in("twitter.com", ("auth_token",)))
+
+    def pinterest_logged_in(self):
+        """Pinterest sets '_auth=1' when logged in, '_auth=0' anonymously."""
+        return self.logged_in("pinterest.com", ("_auth",),
+                              value_ok=lambda v: v not in ("0", "false", ""))
 
     def require_login(self, domain, platform):
         if not self.logged_in(domain):
@@ -255,6 +269,14 @@ def cmd_status():
         state = "LOGGED IN" if b.logged_in(domain) else \
             "NOT LOGGED IN — log into your spare account in the scout window"
         print(f"{name:<13} : {state}")
+    # Twitter/X and Pinterest work WITHOUT login (degraded); login just upgrades
+    # them, so their "not logged in" message is worded as optional.
+    tw = "LOGGED IN" if b.twitter_logged_in() else \
+        "NOT LOGGED IN — optional; log into a spare X account for full tweet data"
+    print(f"{'Twitter/X':<13} : {tw}")
+    pin = "LOGGED IN" if b.pinterest_logged_in() else \
+        "NOT LOGGED IN — optional; log in for full per-keyword trend data"
+    print(f"{'Pinterest':<13} : {pin}")
 
 
 def cmd_stop():

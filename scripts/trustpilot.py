@@ -103,7 +103,23 @@ def fetch_next_data(url):
             raise RuntimeError(f"No Trustpilot page found for this brand ({url}).")
         raise RuntimeError("Trustpilot loaded but its data blob was missing — "
                            "the page markup may have changed.")
-    return json.loads(m.group(1)).get("props", {}).get("pageProps", {})
+    pp = json.loads(m.group(1)).get("props", {}).get("pageProps", {})
+    return pp, html
+
+
+STAR_WORD = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5"}
+DIST_RE = re.compile(
+    r'data-star-rating="(one|two|three|four|five)"[\s\S]{0,400}?aria-valuenow="([\d.]+)"')
+
+
+def parse_breakdown(html):
+    """The star distribution isn't in __NEXT_DATA__; it renders as
+    <div data-star-rating="five"><div role="meter" aria-valuenow="18.2">…>.
+    Pull those percentages straight from the HTML."""
+    out = {}
+    for m in DIST_RE.finditer(html or ""):
+        out[STAR_WORD[m.group(1)]] = f"{round(float(m.group(2)))}%"
+    return {s: out[s] for s in sorted(out, reverse=True)} or None
 
 
 def iso_date(s):
@@ -127,31 +143,6 @@ def norm_review(r, full_body=True):
     }
 
 
-def rating_breakdown(pp):
-    """Best-effort star distribution → percentages, if the page carries counts
-    (usually under the star filter options)."""
-    filters = pp.get("filters") or {}
-    # look for a list of {stars/starRating, count/numberOfReviews}
-    candidates = []
-    for key in ("reviewStatistics", "starFilters", "stars"):
-        v = filters.get(key)
-        if isinstance(v, list):
-            candidates = v
-            break
-    counts = {}
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        star = item.get("stars") or item.get("starRating") or item.get("value")
-        cnt = item.get("count") or item.get("numberOfReviews")
-        if star in (1, 2, 3, 4, 5) and isinstance(cnt, int):
-            counts[str(star)] = cnt
-    if not counts:
-        return None
-    total = sum(counts.values()) or 1
-    return {s: f"{round(counts[s] / total * 100)}%" for s in sorted(counts, reverse=True)}
-
-
 def cmd_reviews(args):
     base = review_url(args.brand)
     pages = clamp_cap(args.pages, DEFAULT_PAGES, HARD_MAX_PAGES, "pages")
@@ -168,7 +159,7 @@ def cmd_reviews(args):
             params["stars"] = star
         url = base + "?" + urllib.parse.urlencode(params)
         try:
-            pp = fetch_next_data(url)
+            pp, _ = fetch_next_data(url)
         except RuntimeError as e:
             if reviews:
                 warn(f"stopped on page {page}: {e}")
@@ -206,7 +197,7 @@ def cmd_reviews(args):
 def cmd_brand(args):
     base = review_url(args.brand)
     try:
-        pp = fetch_next_data(base)
+        pp, html = fetch_next_data(base)
     except RuntimeError as e:
         die(str(e))
     biz = pp.get("businessUnit") or {}
@@ -219,7 +210,7 @@ def cmd_brand(args):
         "total_reviews": biz.get("numberOfReviews"),
         "reviews_last_12m": biz.get("numberOfReviewsLast12Months"),
         "trust_score": biz.get("trustScore"),
-        "rating_breakdown": rating_breakdown(pp),
+        "rating_breakdown": parse_breakdown(html),
         "categories": cats or None,
         "website": biz.get("websiteUrl"),
         "is_claimed": biz.get("isClaimed"),

@@ -91,9 +91,19 @@ reason; don't fight the caps.
 
 ## Reliability tiers — set expectations honestly
 
-- **Solid:** YouTube, Reddit (dual archive backends), web reading.
-- **Session-based, good:** Instagram, TikTok — can hit captcha walls; the
-  fix is human (open the scout window, complete the check, retry).
+- **Solid:** YouTube, Reddit (dual archive backends), web reading, Amazon
+  product info, Trustpilot (direct fetch + scout-browser fallback).
+- **Session-based, good:** Instagram, TikTok, Amazon reviews — need a spare
+  account logged into the scout browser; can hit captcha walls (open the
+  scout window, complete the check, retry). Google Shopping is browser-based
+  (scout browser) and now returns consistent results.
+- **Optional login upgrades these** (they work WITHOUT login in degraded
+  mode, login just adds data):
+  - **Twitter/X** — logged into a spare X account = full tweet text +
+    engagement; **without login it's BEST-EFFORT** (Nitter mirrors, then
+    logged-out x.com, then web-search links only).
+  - **Pinterest Trends** — logged in = full per-keyword related trends;
+    **without login it's limited** to the public regional spotlight.
 - **BEST-EFFORT, weaker by design:** Quora — web-search discovery + visible
   page text only. No vote counts, no full threads, no guarantees. Say so
   when presenting Quora results.
@@ -146,16 +156,22 @@ reason; don't fight the caps.
 12. **Trustpilot** is locale-specific — the same brand differs on `.com` vs
     `.co.uk`. It blocks scripts, so in practice it runs through the scout
     browser; `--stars 1` = pain points, `--stars 5` = what customers love.
-13. **Google Shopping** is **BEST-EFFORT**: Google obfuscates the layout, it
-    rotates often, and prices are region/IP-dependent — it may return few or
-    no rows (with a note). Don't treat it as authoritative pricing.
-14. **Pinterest Trends** needs the scout browser (no login). Per-keyword data
-    is login-gated, so results are the **public regional spotlight** (MoM
-    growth) matched to the query — directional signals, not exact volumes.
-15. **Twitter/X is BEST-EFFORT** (like Quora): Nitter mirrors are mostly dead,
-    x.com logged-out is limited, and the web-search fallback returns
-    **link-only** results (no text/engagement). Report the `source` field and
-    the best_effort caveat; never promise Twitter-level completeness.
+13. **Google Shopping** uses the scout browser on Google's `udm=28` surface
+    and returns product title/price/seller consistently. Prices are
+    region/IP-dependent; ratings often don't render. Still supplementary —
+    don't treat it as authoritative pricing.
+14. **Pinterest Trends** needs the scout browser. **Login is optional and
+    upgrades it:** logged into a Pinterest account → full per-keyword related
+    trends (`source: logged-in`); logged out → the **public regional
+    spotlight** matched to the query (`source: public spotlight`). Either way,
+    relative signals, not exact volumes. The interest chart is an SVG and
+    isn't extracted.
+15. **Twitter/X — login is optional and upgrades it.** Logged into a spare X
+    account in the scout browser → full tweet text + engagement (tier 0).
+    Without login it's **BEST-EFFORT**: Nitter mirrors (mostly dead) →
+    logged-out x.com (limited) → web-search **link-only** results. Always
+    report the `source` field; never promise Twitter-level completeness
+    without a login.
 
 All four of these (Trustpilot, Google Shopping, Pinterest, Twitter/X) are
 supplementary research tools, not primary platforms.

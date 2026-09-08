@@ -162,34 +162,60 @@ X_EXTRACTOR = r"""
       const m = (el.getAttribute('aria-label')||'').match(/([\d,]+)/);
       return m ? parseInt(m[1].replace(/,/g,'')) : null;
     };
+    // views have no stable testid — read them from the "N Views" analytics link
+    let views = null;
+    const vm = (art.innerText||'').match(/([\d,.]+[KM]?)\s*Views/i);
+    if (vm) views = vm[1];
     out.push({author: handle, display_name: name, text: text,
               date: date ? date.split("T")[0] : null,
               likes: stat('like'), retweets: stat('retweet'), replies: stat('reply'),
-              url: url});
+              views: views, url: url});
   }
   return out;
 })()
 """
 
+X_ERROR = ("Something went wrong", "Try again", "Rate limit exceeded",
+           "This account doesn’t exist", "Caution: This account is temporarily")
 
-def try_x_com(url, limit):
+
+def try_x_com(url, limit, settle=8, source="x.com (scout browser, logged out)"):
+    """Extract tweets from x.com in the scout browser. Returns (tweets, source)
+    or (None, None) when login-walled, error-paged, or empty. `settle` is
+    longer for the logged-in tier — x.com is slow to render."""
     try:
         import browser
         if not browser.is_running():
             browser.launch()
-        tab = browser.attach().page(url, settle=7)
+        tab = browser.attach().page(url, settle=settle)
         try:
             landed = (tab.eval("location.href") or "").lower()
-            if "login" in landed or "/i/flow" in landed:
-                return None, None  # login-walled
+            if "login" in landed or "/i/flow" in landed or "/account/access" in landed:
+                return None, None  # login/verification wall
+            head = (tab.eval("document.body.innerText") or "")[:400]
+            if any(e in head for e in X_ERROR):
+                return None, None  # x.com error / rate-limit page
             tab.eval("window.scrollTo(0, document.body.scrollHeight)")
             jitter_sleep(2, 4, "loading x.com results")
             tweets = tab.eval(X_EXTRACTOR.replace("__MAX__", str(limit))) or []
         finally:
             tab.close()
-        return (tweets[:limit], "x.com (scout browser)") if tweets else (None, None)
+        return (tweets[:limit], source) if tweets else (None, None)
     except Exception:
         return None, None
+
+
+def twitter_session():
+    """The scout Browser if it's running AND has an X login, else None. Never
+    launches the browser just to check — login is optional for this scraper."""
+    try:
+        import browser
+        if not browser.is_running():
+            return None
+        b = browser.attach()
+        return b if b.twitter_logged_in() else None
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -220,13 +246,24 @@ def try_web_search(query, limit):
 # commands
 # --------------------------------------------------------------------------
 def run_chain(nitter_path, x_url, limit, web_query=None):
+    # Tier 0 (best data): logged-in x.com in the scout browser — full tweet
+    # text + engagement. Only when a spare X account is logged in; optional.
+    if twitter_session() is not None:
+        tweets, source = try_x_com(x_url, limit, settle=9,
+                                   source="x.com (scout browser, logged in)")
+        if tweets:
+            return tweets, source
+        warn("logged into X but no results extracted — falling back...")
+    # Tier 1: Nitter mirrors.
     tweets, source = try_nitter(nitter_path, limit)
     if tweets:
         return tweets, source
-    warn("Nitter mirrors unavailable — trying x.com via scout browser...")
+    # Tier 2: logged-out x.com (limited public results).
+    warn("Nitter mirrors unavailable — trying x.com logged out...")
     tweets, source = try_x_com(x_url, limit)
     if tweets:
         return tweets, source
+    # Tier 3: web search (links only).
     if web_query:
         warn("x.com logged-out results unavailable — trying web search...")
         tweets, source = try_web_search(web_query, limit)
