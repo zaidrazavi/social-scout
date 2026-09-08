@@ -252,6 +252,55 @@ def check_google_trends():
     return "WARN", "pytrends responded but with no data — try again later"
 
 
+def check_trustpilot():
+    """Trustpilot 403s scripts, so this really tests the scout-browser path."""
+    import trustpilot
+    try:
+        pp = trustpilot.fetch_next_data("https://www.trustpilot.com/review/amazon.com")
+    except RuntimeError as e:
+        return "WARN", (f"Trustpilot not reachable ({str(e)[:60]}…) — it blocks "
+                        "scripts; start the scout browser and retry")
+    biz = pp.get("businessUnit") or {}
+    if biz.get("displayName"):
+        return True, f"reviews load ({biz['displayName']}, {biz.get('numberOfReviews')} reviews)"
+    return "WARN", "loaded but no business data — markup may have changed"
+
+
+def check_google_shopping():
+    import browser
+    if not browser.is_running():
+        return "WARN", "needs the scout browser (python scripts/browser.py launch)"
+    import google_shopping as gs
+    ads = gs.extract_via_browser(gs.build_url("soap", "us"), 3)
+    if ads:
+        return True, f"parsed {len(ads)} listings"
+    return "WARN", ("no listings parsed — Google's Shopping layout is obfuscated "
+                    "and flaky (best-effort)")
+
+
+def check_pinterest():
+    import browser
+    if not browser.is_running():
+        return "WARN", "needs the scout browser (python scripts/browser.py launch)"
+    import pinterest_trends as pt
+    trends = pt.parse_spotlight(pt.load_trends("US"))
+    if trends:
+        return True, f"spotlight parsed ({len(trends)} trending terms)"
+    return "WARN", "loaded but no spotlight parsed — Pinterest may have redesigned"
+
+
+def check_twitter():
+    """Best-effort — probe Nitter mirrors; report if any serve tweets."""
+    import urllib.parse
+    import twitter
+    path = "/search?" + urllib.parse.urlencode({"q": "news", "f": "tweets"})
+    tweets, source = twitter.try_nitter(path, 3)
+    if tweets:
+        return True, f"Nitter mirror working ({source})"
+    return "WARN", ("all Nitter mirrors down/challenged — search still tries "
+                    "x.com + web-search fallbacks (best-effort)")
+
+
 # --- optional extras -------------------------------------------------------
 
 def check_whisper():
@@ -287,6 +336,10 @@ CHECKS = [
     ("Amazon product pages", check_amazon, "amazon"),
     ("Meta Ad Library", check_meta_ads, "meta"),
     ("Google Trends (pytrends)", check_google_trends, "gtrends"),
+    ("Trustpilot reviews", check_trustpilot, "trustpilot"),
+    ("Google Shopping", check_google_shopping, "shopping"),
+    ("Pinterest Trends", check_pinterest, "pinterest"),
+    ("Twitter/X (best-effort)", check_twitter, "twitter"),
     ("Local Whisper transcripts", check_whisper, "optional"),
 ]
 
@@ -356,6 +409,15 @@ def verdicts(r):
         lines.append(("Google Trends", "NOT READY — pip install -r requirements.txt"))
     else:
         lines.append(("Google Trends", "RATE-LIMITED right now — use sparingly, retry later"))
+
+    lines.append(("Trustpilot", "READY" if ok("trustpilot")
+                  else "LIMITED — blocks scripts; needs the scout browser"))
+    lines.append(("Google Shopping", "READY (best-effort)" if ok("shopping")
+                  else "BEST-EFFORT — obfuscated/flaky; may return little"))
+    lines.append(("Pinterest Trends", "READY (needs scout browser)" if ok("pinterest")
+                  else "NOT READY — start the scout browser (no login)"))
+    lines.append(("Twitter/X", "BEST-EFFORT (a Nitter mirror is up)" if ok("twitter")
+                  else "BEST-EFFORT (Nitter down — x.com/web-search fallbacks only)"))
     return lines, ok("youtube") and any(reddit) and ok("web")
 
 

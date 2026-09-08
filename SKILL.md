@@ -58,6 +58,15 @@ on" something — offer a manual re-run instead.
 | "compare these keywords on Google Trends" | `python scripts/google_trends.py compare "soap,candles,bath bombs"` |
 | "related searches for handmade soap" | `python scripts/google_trends.py related "handmade soap"` |
 | "where is handmade soap trending" | `python scripts/google_trends.py by_region "handmade soap"` |
+| "reviews for this brand on Trustpilot" | `python scripts/trustpilot.py reviews <domain>` |
+| "1-star Trustpilot reviews for competitor" | `python scripts/trustpilot.py reviews <domain> --stars 1` |
+| "Trustpilot rating for this brand" | `python scripts/trustpilot.py brand <domain>` |
+| "search Google Shopping for handmade soap" / "price comparison" | `python scripts/google_shopping.py search "handmade soap"` |
+| "Google Shopping product details" | `python scripts/google_shopping.py product <url>` |
+| "Pinterest trends for handmade soap" / "what's trending on Pinterest" | `python scripts/pinterest_trends.py search "handmade soap"` |
+| "currently trending on Pinterest" | `python scripts/pinterest_trends.py trending` |
+| "what's Twitter saying about X" / "tweets about handmade soap" | `python scripts/twitter.py search "handmade soap"` |
+| "recent tweets from this account" | `python scripts/twitter.py user <handle>` |
 | "read this webpage / get this URL's content" | `python scripts/webread.py read <url>` |
 | "is the scraper working / doctor / health check" | `python scripts/doctor.py` |
 
@@ -134,6 +143,22 @@ reason; don't fight the caps.
     429 it backs off then returns a clear "rate-limited, retry later" message.
     Numbers are **relative interest 0-100, not absolute search volume**;
     `rising` related queries (big % jumps) are the emerging-trend signal.
+12. **Trustpilot** is locale-specific — the same brand differs on `.com` vs
+    `.co.uk`. It blocks scripts, so in practice it runs through the scout
+    browser; `--stars 1` = pain points, `--stars 5` = what customers love.
+13. **Google Shopping** is **BEST-EFFORT**: Google obfuscates the layout, it
+    rotates often, and prices are region/IP-dependent — it may return few or
+    no rows (with a note). Don't treat it as authoritative pricing.
+14. **Pinterest Trends** needs the scout browser (no login). Per-keyword data
+    is login-gated, so results are the **public regional spotlight** (MoM
+    growth) matched to the query — directional signals, not exact volumes.
+15. **Twitter/X is BEST-EFFORT** (like Quora): Nitter mirrors are mostly dead,
+    x.com logged-out is limited, and the web-search fallback returns
+    **link-only** results (no text/engagement). Report the `source` field and
+    the best_effort caveat; never promise Twitter-level completeness.
+
+All four of these (Trustpilot, Google Shopping, Pinterest, Twitter/X) are
+supplementary research tools, not primary platforms.
 
 ## Presenting results
 

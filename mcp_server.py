@@ -472,6 +472,116 @@ tool(
                "--geo", str(a.get("geo", ""))],
 )
 
+# ---- Trustpilot (public; direct-first, scout browser fallback) ----
+tool(
+    "trustpilot_reviews",
+    "Pull Trustpilot reviews for a brand. Filter by star rating — 1-star for "
+    "competitor pain points, 5-star for what customers love. Input a domain "
+    "(example.com) or a full Trustpilot URL. No login.",
+    _schema({"brand": STR,
+             "stars": {**STR, "enum": ["1", "2", "3", "4", "5", "all"], "default": "all"},
+             "sort": {**STR, "enum": ["recency", "relevance"], "default": "recency"},
+             "pages": {**INT, "default": 3},
+             "max_reviews": {**INT, "default": 30}}, ["brand"]),
+    lambda a: ["trustpilot.py", "reviews", a["brand"],
+               "--stars", str(a.get("stars", "all")),
+               "--sort", str(a.get("sort", "recency")),
+               "--pages", str(a.get("pages", 3)),
+               "--max-reviews", str(a.get("max_reviews", 30))],
+    gate=("trustpilot", False),
+    timeout=300,
+)
+tool(
+    "trustpilot_brand",
+    "Get a Trustpilot brand overview — overall rating, total reviews, rating "
+    "breakdown, trust score, categories. Quick competitive intel. No login.",
+    _schema({"brand": STR}, ["brand"]),
+    lambda a: ["trustpilot.py", "brand", a["brand"]],
+    gate=("trustpilot", False),
+)
+
+# ---- Google Shopping (needs scout browser; Google obfuscates the layout) ----
+tool(
+    "google_shopping_search",
+    "Search Google Shopping for products with prices, sellers, and ratings — "
+    "competitive pricing intel. BEST-EFFORT: Google obfuscates its Shopping "
+    "layout and results vary by region/IP. No login.",
+    _schema({"query": STR, "limit": {**INT, "default": 20},
+             "min_price": {"type": "number"}, "max_price": {"type": "number"},
+             "country": {**STR, "default": "us"}}, ["query"]),
+    lambda a: ["google_shopping.py", "search", a["query"],
+               "--limit", str(a.get("limit", 20)),
+               "--country", str(a.get("country", "us"))]
+              + (["--min-price", str(a["min_price"])] if a.get("min_price") is not None else [])
+              + (["--max-price", str(a["max_price"])] if a.get("max_price") is not None else []),
+    gate=("shopping", False),
+    timeout=300,
+)
+tool(
+    "google_shopping_product",
+    "Get details from a Google Shopping product URL — prices seen, rating, "
+    "review count. Needs the scout browser (JS-rendered). BEST-EFFORT.",
+    _schema({"url": STR}, ["url"]),
+    lambda a: ["google_shopping.py", "product", a["url"]],
+    gate=("shopping", False),
+    timeout=300,
+)
+
+# ---- Pinterest Trends (scout browser required; public spotlight) ----
+tool(
+    "pinterest_trends_search",
+    "Search Pinterest Trends for a topic — related trending terms and visual "
+    "trend signals for a niche. BEST-EFFORT: Pinterest gates per-keyword data "
+    "behind login, so this returns the public regional spotlight matched to "
+    "your query. Needs the scout browser (no login).",
+    _schema({"query": STR, "geo": {**STR, "default": "US"},
+             "timeframe": {**STR,
+                           "enum": ["last_30_days", "last_3_months", "last_12_months"],
+                           "default": "last_12_months"}}, ["query"]),
+    lambda a: ["pinterest_trends.py", "search", a["query"],
+               "--geo", str(a.get("geo", "US")),
+               "--timeframe", str(a.get("timeframe", "last_12_months"))],
+    gate=("pinterest", False),
+    timeout=240,
+)
+tool(
+    "pinterest_trending",
+    "Get currently trending topics on Pinterest (regional 'Trends in the "
+    "spotlight', month-over-month growth). Spot emerging visual/aesthetic "
+    "trends. Needs the scout browser (no login).",
+    _schema({"geo": {**STR, "default": "US"}, "category": STR}),
+    lambda a: ["pinterest_trends.py", "trending", "--geo", str(a.get("geo", "US"))]
+              + (["--category", a["category"]] if a.get("category") else []),
+    gate=("pinterest", False),
+    timeout=240,
+)
+
+# ---- Twitter/X (BEST-EFFORT: Nitter -> x.com scout -> web search) ----
+tool(
+    "twitter_search",
+    "Search Twitter/X for real-time conversations about a topic — trending "
+    "complaints, viral moments, sentiment. BEST-EFFORT: uses Nitter mirrors "
+    "with scout-browser and web-search fallbacks; expect gaps or link-only "
+    "results when X is blocking.",
+    _schema({"query": STR, "limit": {**INT, "default": 20},
+             "sort": {**STR, "enum": ["top", "latest"], "default": "top"}}, ["query"]),
+    lambda a: ["twitter.py", "search", a["query"],
+               "--limit", str(a.get("limit", 20)),
+               "--sort", str(a.get("sort", "top"))],
+    timeout=300,
+)
+tool(
+    "twitter_user",
+    "Get recent tweets from a specific Twitter/X user (@handle). BEST-EFFORT: "
+    "Nitter mirrors with fallbacks; engagement counts and text may be missing "
+    "when only the web-search fallback is reachable.",
+    _schema({"handle": STR, "limit": {**INT, "default": 20},
+             "include_replies": {**BOOL, "default": False}}, ["handle"]),
+    lambda a: ["twitter.py", "user", a["handle"], "--limit", str(a.get("limit", 20))]
+              + (["--replies"] if a.get("include_replies") else []),
+    timeout=300,
+)
+
 # ---- Health check ----
 tool(
     "health_check",
