@@ -1,16 +1,47 @@
 # Social Scout
 
-A Claude Code skill for **manual, on-demand research scraping** across six
-surfaces — no API keys, no paid services, no credentials in this repo:
+A Claude Code skill (and Claude Desktop MCP server) for **manual, on-demand
+research scraping** across **11 platforms / 34 tools** — no API keys, no paid
+services, no credentials in this repo:
 
 | Platform | What you get | Auth needed | Reliability |
 |---|---|---|---|
 | YouTube | search, video stats, transcripts, channel uploads | none | solid (yt-dlp) |
-| Reddit | keyword search, subreddit feeds, comments | none | solid (Arctic Shift → Pullpush archives, with Reddit's own `.json` as a lightweight last-resort fallback) |
-| Instagram | reel/post caption, like/comment/view counts, top comments, video + transcript, hashtag discovery | **your own spare account** in the scout browser | good, session-based |
-| TikTok | video caption, like/comment/share/view counts, hashtags, top comments, video + transcript, trending hashtags | **your own spare account** in the scout browser (trending needs no login) | good, session-based |
+| Reddit | keyword search, subreddit feeds, comments | none | solid (Arctic Shift → Pullpush → Reddit `.json` fallback) |
+| Instagram | reel/post caption, like/comment/view counts, top comments, video + transcript, hashtag discovery | **spare account** in scout browser | good, session-based |
+| TikTok | video caption, like/comment/share/view counts, hashtags, top comments, video + transcript, trending hashtags | **spare account** in scout browser (trending needs no login) | good, session-based |
+| Amazon | product info (title, price, rating, breakdown, bullets); reviews by star | product: none · **reviews: Amazon login** in scout browser | good (product solid; reviews gated) |
+| Meta Ad Library | active FB/IG competitor ads: text, page, run date, media type | none (scout browser, no FB login) | good |
+| Google Trends | interest over time, compare keywords, related/rising queries, by region | none | good (pytrends; rate-limits — use sparingly) |
+| Trustpilot | brand overview (rating, breakdown, categories); reviews by star | none (scout browser fallback) | solid |
+| Google Shopping | product search: title, price, seller | none (scout browser) | good |
+| Pinterest Trends | trending spotlight + per-keyword related trends | none; **optional Pinterest login** upgrades to per-keyword | session-upgradable |
+| Twitter/X | tweet search + user timeline (text, engagement) | none; **optional X login** upgrades to full data | ⚠️ best-effort → good with login |
 | Quora | question + visible answer text on a topic | none | ⚠️ **best-effort only** |
 | Any webpage | clean readable text from a single URL | none | good (Jina Reader + local fallback) |
+
+**Optional login upgrades** (never required — these work in degraded mode
+without it): logging a **spare Pinterest / X account** into the scout browser
+upgrades Pinterest to per-keyword trends and Twitter/X to full tweet text +
+engagement. Instagram/TikTok **do** require a spare-account login; Amazon
+reviews require any Amazon login.
+
+## Download / install
+
+Clone the private repo (recommended — easy to `git pull` updates):
+
+```bash
+git clone https://github.com/zaidrazavi/social-scout.git
+```
+
+Or grab a ZIP from GitHub: **Code ▸ Download ZIP** on
+[github.com/zaidrazavi/social-scout](https://github.com/zaidrazavi/social-scout),
+or directly [main.zip](https://github.com/zaidrazavi/social-scout/archive/refs/heads/main.zip).
+
+Then follow the **"🖥️ Claude Desktop App Setup (MCP Server)"** section just
+below (double-click `install.bat` / `install.sh`, then point Claude Desktop at
+`mcp_server.py`). Power users can instead drop the folder into their Claude
+Code skills directory — see [Install (Claude Code / terminal)](#install-claude-code--terminal).
 
 ## Design principles (read before using)
 
@@ -261,6 +292,13 @@ Once set up, type things like:
 - "Transcribe this TikTok [url]"
 - "Search YouTube for soap making tutorials"
 - "What is Reddit saying about natural skincare"
+- "Pull the 1-star Amazon reviews for [product url]" · "Amazon product info for [url]"
+- "Find active Facebook/Instagram ads for handmade soap"
+- "Google Trends for handmade soap" · "compare soap, candles, bath bombs on Google Trends"
+- "Trustpilot rating and 1-star reviews for [brand].com"
+- "Search Google Shopping for handmade soap" (price comparison)
+- "What's trending on Pinterest for skincare"
+- "What's Twitter/X saying about handmade soap" · "recent tweets from @handle"
 - "What is Quora saying about soap business tips"
 - "Read this webpage for me: [url]"
 - "Run the social scout health check"
@@ -379,9 +417,16 @@ never a silent empty result.
 - "Transcribe this TikTok" → `tiktok.py transcript <url>`
 - "What hashtags are trending on TikTok for fitness?" → `tiktok.py hashtags fitness`
 - "Find Instagram hashtags for the skincare niche" → `instagram.py hashtags skincare`
+- "1-star Amazon reviews for <url>" → `amazon.py reviews <url> --stars 1` · "Amazon product info" → `amazon.py product <url>`
+- "Competitor ads for handmade soap" → `meta_ads.py search "handmade soap"` · "ads from this page" → `meta_ads.py page <name>`
+- "Google Trends for X" → `google_trends.py interest "X"` · "compare a,b,c" → `google_trends.py compare "a,b,c"` · related/by_region likewise
+- "Trustpilot reviews/rating for brand.com" → `trustpilot.py reviews <domain>` / `trustpilot.py brand <domain>`
+- "Search Google Shopping for X" → `google_shopping.py search "X"`
+- "Pinterest trends for X" → `pinterest_trends.py search "X"` · "what's trending on Pinterest" → `pinterest_trends.py trending`
+- "What's Twitter saying about X" → `twitter.py search "X"` · "tweets from @handle" → `twitter.py user <handle>`
 - "What is Quora saying about morning routines?" → `quora.py search "morning routines"`
 - "Read this page for me <url>" → `webread.py read <url>`
-- "Find trending YouTube videos about X" / "search Reddit for Y" → unchanged v1 commands
+- "Find trending YouTube videos about X" / "search Reddit for Y" → `youtube.py` / `reddit.py`
 - "Is the scraper healthy?" → `doctor.py`
 
 ## Rate limiting & anti-ban design
