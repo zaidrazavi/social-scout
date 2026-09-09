@@ -98,19 +98,51 @@ def google_search(topic, limit):
     return _clean_candidates(raw, limit)
 
 
+def find_quora_urls_browser(topic, limit):
+    """Optional last-resort discovery: search Google in the scout browser (a
+    real Chrome isn't IP-blocked the way direct fetches are). Returns [] if the
+    scout browser isn't running or anything fails — never required."""
+    try:
+        import browser
+        if not browser.is_running():
+            return []
+        q = urllib.parse.quote(f"site:quora.com {topic}")
+        tab = browser.attach().page(
+            f"{GOOGLE}?q={q}&num={max(limit * 2, 10)}", settle=5)
+        try:
+            hrefs = tab.eval(
+                "Array.from(document.querySelectorAll('a[href]')).map(a => a.href)") or []
+        finally:
+            tab.close()
+    except Exception:
+        return []
+    # Google links are either direct (https://www.quora.com/…) or /url?q=<target>;
+    # unwrap the redirect, then _clean_candidates keeps only real quora questions.
+    raw = []
+    for h in hrefs:
+        target = h
+        if "/url?" in h:
+            qd = urllib.parse.parse_qs(urllib.parse.urlparse(h).query)
+            target = (qd.get("q") or qd.get("url") or [""])[0]
+        raw.append(target)
+    return _clean_candidates(raw, limit)
+
+
 def find_quora_urls(topic, limit):
-    """Try DuckDuckGo first, then Google. Raise only if both fail or find
-    nothing — each can be blocked (503/429) from a given IP."""
-    errors = []
-    for name, engine in (("DuckDuckGo", ddg_search), ("Google", google_search)):
+    """Try DuckDuckGo → Google (direct) → Google via the scout browser. Each
+    tier can be IP-blocked; the browser tier is optional (skipped if the scout
+    browser isn't running). Raise only if every tier fails or finds nothing."""
+    for engine in (ddg_search, google_search):
         try:
             urls = engine(topic, limit)
             if urls:
                 return urls
-            errors.append(f"{name}: no usable results")
-        except Exception as e:
-            errors.append(f"{name}: {e}")
-    raise RuntimeError("; ".join(errors))
+        except Exception:
+            pass
+    urls = find_quora_urls_browser(topic, limit)  # optional bonus tier
+    if urls:
+        return urls
+    raise RuntimeError("discovery blocked")
 
 
 def read_via_browser(url):
@@ -151,10 +183,10 @@ def main():
     limit = min(max(args.limit, 1), 5)
     try:
         urls = find_quora_urls(args.topic, limit)
-    except (RuntimeError, urllib.error.URLError, OSError, TimeoutError) as e:
-        die(f"Quora URL discovery failed (both DuckDuckGo and Google "
-            f"unreachable/blocked: {e}). This backend is best-effort; try "
-            "again later or search manually.")
+    except (RuntimeError, urllib.error.URLError, OSError, TimeoutError):
+        die("Quora search is temporarily unavailable — this is normal, Quora "
+            "is a best-effort source that works intermittently. Try again in a "
+            "few minutes.")
     if not urls:
         die(f"No Quora pages found for '{args.topic}'. Try broader phrasing — "
             "discovery here is best-effort web search, not a Quora API.")
@@ -188,10 +220,10 @@ def main():
             warn(f"could not read {url}: {reader_error}")
             print(f"[unreadable: {reader_error}]")
     if failures == len(urls):
-        die("Found Quora URLs but could not read any of them — Quora may be "
-            "blocking readers right now. Tip: start the scout browser "
-            "(python browser.py launch) and retry — a real Chrome usually gets "
-            "through. Best-effort backend.")
+        die("Quora search is temporarily unavailable — this is normal, Quora "
+            "is a best-effort source that works intermittently. Try again in a "
+            "few minutes. (Tip: starting the scout browser lets a real Chrome "
+            "read pages the direct fetch can't.)")
 
 
 if __name__ == "__main__":

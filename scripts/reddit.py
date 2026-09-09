@@ -224,26 +224,72 @@ def fetch_reddit_json_comments(post_id, limit, date_range=None):
     return [it for it in items if within_range(it, date_range)]
 
 
-def with_fallback(arctic_url, pullpush_url, reddit_json_fn=None):
-    """Try Arctic Shift (with 422 retries), then Pullpush, then — only if both
-    archives fail and a builder was supplied — Reddit's own public .json.
-    Raise only if every available source fails."""
-    errors = []
+def fetch_reddit_browser(json_url, date_range=None, kind="posts"):
+    """Optional last-resort tier: open reddit.com in the scout browser and do a
+    same-origin fetch to the .json endpoint. A real Chrome isn't IP-blocked the
+    way urllib is, and Reddit serves JSON to a same-origin browser fetch.
+    Returns items, or None if the scout browser isn't running or anything fails
+    — never a hard requirement."""
+    try:
+        import browser
+        if not browser.is_running():
+            return None
+        sep = "&" if "?" in json_url else "?"
+        target = f"{json_url}{sep}raw_json=1"
+        tab = browser.Browser().page("https://www.reddit.com/", settle=4)
+        try:
+            js = ("fetch(" + json.dumps(target) + ", {credentials:'include'})"
+                  ".then(r => r.ok ? r.json() : null)")
+            payload = tab.eval(js, timeout=30)
+        finally:
+            tab.close()
+    except Exception:
+        return None
+    if payload is None:
+        return None
+    if kind == "comments":
+        if not (isinstance(payload, list) and len(payload) >= 2):
+            return None
+        items = extract_reddit_json(payload[1])
+    else:
+        items = extract_reddit_json(payload)
+    return [it for it in items if within_range(it, date_range)]
+
+
+# Shown to the user when every Reddit source is unreachable — deliberately
+# free of HTTP codes and backend names (those only scare non-technical users).
+REDDIT_DOWN_MSG = (
+    "Reddit is temporarily unreachable from this network. This usually "
+    "resolves within 15–60 minutes. Try again later, or try from a different "
+    "network (home WiFi usually works better than office/VPN).")
+
+
+def with_fallback(arctic_url, pullpush_url, reddit_json_fn=None, browser_fn=None):
+    """Try Arctic Shift (with 422 retries) → Pullpush → Reddit's public .json →
+    (optional) the scout browser. Raise a friendly message only if every
+    available source fails."""
     if arctic_url:
         try:
             return fetch_arctic(arctic_url), "arctic_shift"
-        except Exception as e:
-            errors.append(f"Arctic Shift: {e}")
+        except Exception:
+            pass
     try:
         return extract_items(http_json(pullpush_url)), "pullpush"
-    except Exception as e:
-        errors.append(f"Pullpush: {e}")
+    except Exception:
+        pass
     if reddit_json_fn is not None:
         try:
             return reddit_json_fn(), "reddit_json"
-        except Exception as e:
-            errors.append(f"Reddit .json: {e}")
-    raise SystemExit("All Reddit sources failed. " + " | ".join(errors))
+        except Exception:
+            pass
+    if browser_fn is not None:
+        try:
+            items = browser_fn()
+            if items is not None:
+                return items, "scout_browser"
+        except Exception:
+            pass
+    raise SystemExit(REDDIT_DOWN_MSG)
 
 
 def usable_self_post(r):
@@ -276,11 +322,11 @@ def cmd_search(args):
             p_url = f"{PULLPUSH}/search/submission/?" + qs({
                 "q": args.query, "subreddit": sub, "size": limit,
                 "after": after, "before": before})
-            rj = lambda s=sub: fetch_reddit_json(
-                f"{REDDIT}/r/{urllib.parse.quote(s)}/search.json?" + qs({
-                    "q": args.query, "restrict_sr": 1, "sort": "new",
-                    "limit": limit}), (after, before))
-            items, via = with_fallback(a_url, p_url, rj)
+            rj_url = f"{REDDIT}/r/{urllib.parse.quote(sub)}/search.json?" + qs({
+                "q": args.query, "restrict_sr": 1, "sort": "new", "limit": limit})
+            rj = lambda u=rj_url: fetch_reddit_json(u, (after, before))
+            bj = lambda u=rj_url: fetch_reddit_browser(u, (after, before), "posts")
+            items, via = with_fallback(a_url, p_url, rj, bj)
             all_items.extend(items)
             via_used.add(via)
         emit(all_items, "+".join(sorted(via_used)), "post", args.full, args.min_score, args.self_only)
@@ -289,10 +335,11 @@ def cmd_search(args):
         # subreddit/author filter, so this goes Pullpush -> Reddit .json.
         p_url = f"{PULLPUSH}/search/submission/?" + qs({
             "q": args.query, "size": limit, "after": after, "before": before})
-        rj = lambda: fetch_reddit_json(
-            f"{REDDIT}/search.json?" + qs({
-                "q": args.query, "sort": "new", "limit": limit}), (after, before))
-        items, via = with_fallback(None, p_url, rj)
+        rj_url = f"{REDDIT}/search.json?" + qs({
+            "q": args.query, "sort": "new", "limit": limit})
+        rj = lambda u=rj_url: fetch_reddit_json(u, (after, before))
+        bj = lambda u=rj_url: fetch_reddit_browser(u, (after, before), "posts")
+        items, via = with_fallback(None, p_url, rj, bj)
         emit(items, via, "post", args.full, args.min_score, args.self_only)
 
 
@@ -304,10 +351,10 @@ def cmd_subreddit(args):
         "after": after, "before": before})
     p_url = f"{PULLPUSH}/search/submission/?" + qs({
         "subreddit": args.name, "size": limit, "after": after, "before": before})
-    rj = lambda: fetch_reddit_json(
-        f"{REDDIT}/r/{urllib.parse.quote(args.name)}/new.json?limit={limit}",
-        (after, before))
-    items, via = with_fallback(a_url, p_url, rj)
+    rj_url = f"{REDDIT}/r/{urllib.parse.quote(args.name)}/new.json?limit={limit}"
+    rj = lambda u=rj_url: fetch_reddit_json(u, (after, before))
+    bj = lambda u=rj_url: fetch_reddit_browser(u, (after, before), "posts")
+    items, via = with_fallback(a_url, p_url, rj, bj)
     emit(items, via, "post", args.full, args.min_score, args.self_only)
 
 
@@ -334,7 +381,9 @@ def cmd_comments(args):
         "size": limit, "after": after, "before": before})
     if post_id:
         # A specific post's comments come straight from that post's .json.
+        c_url = f"{REDDIT}/comments/{post_id}.json?limit={limit}&sort=top"
         rj = lambda: fetch_reddit_json_comments(post_id, limit, (after, before))
+        bj = lambda u=c_url: fetch_reddit_browser(u, (after, before), "comments")
     else:
         # Keyword comment search: Reddit's search.json with type=comment,
         # scoped to a subreddit when one was given.
@@ -343,8 +392,10 @@ def cmd_comments(args):
         params = {"q": args.query, "type": "comment", "sort": "new", "limit": limit}
         if args.subreddit:
             params["restrict_sr"] = 1
-        rj = lambda: fetch_reddit_json(base + "?" + qs(params), (after, before))
-    items, via = with_fallback(a_url, p_url, rj)
+        c_url = base + "?" + qs(params)
+        rj = lambda u=c_url: fetch_reddit_json(u, (after, before))
+        bj = lambda u=c_url: fetch_reddit_browser(u, (after, before), "posts")
+    items, via = with_fallback(a_url, p_url, rj, bj)
     emit(items, via, "comment", args.full)
 
 

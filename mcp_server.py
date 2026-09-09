@@ -585,12 +585,12 @@ tool(
 # ---- Health check ----
 tool(
     "health_check",
-    "Run a full diagnostic check on all social-scout backends — YouTube, "
-    "Reddit, Instagram, TikTok, Quora, web reader — and report READY / NOT "
-    "READY / BEST-EFFORT status for each.",
+    "Fast health check of all social-scout platforms — reports which are "
+    "working, which need a login, and which are temporarily down, in plain "
+    "language. Finishes in seconds.",
     _schema({}),
-    lambda a: ["doctor.py"],
-    timeout=TIMEOUT_HEALTH,
+    lambda a: ["doctor.py", "--quick"],
+    timeout=60,
 )
 
 

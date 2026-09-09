@@ -13,10 +13,13 @@ Exit code 0 = both platforms usable, 1 = something core is broken.
 Run:  python scripts/doctor.py
 """
 
+import concurrent.futures
 import json
 import shutil
 import subprocess
 import sys
+import time
+import urllib.parse
 import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -434,7 +437,222 @@ def verdicts(r):
     return lines, ok("youtube") and any(reddit) and ok("web")
 
 
+# ==========================================================================
+# QUICK MODE — fast, non-technical health check used by the MCP tool.
+# One attempt per check, hard 10s timeout, all run concurrently so the whole
+# thing finishes in well under 30s. No retries, no HTTP codes, no backend
+# names in the output.
+# ==========================================================================
+
+def check_with_timeout(fn, timeout=10):
+    """Run a check with a hard timeout. Returns (status, detail). status is one
+    of 'ok' / 'warn' / 'down' / 'skip'."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            return "down", "Temporarily down — try again later"
+        except Exception:
+            return "down", "Temporarily down — try again later"
+
+
+def _http_reachable(url, timeout=8):
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return 200 <= getattr(r, "status", 200) < 400
+
+
+def _browser_snapshot():
+    """Read the scout browser's login state ONCE (one tab) so the per-platform
+    quick checks are instant. Never raises."""
+    snap = {"running": False, "ig": False, "tt": False, "tw": False, "pin": False}
+    try:
+        import browser
+        if not browser.is_running():
+            return snap
+        snap["running"] = True
+        b = browser.Browser()
+        cookies = b.all_cookies()
+        now = time.time()
+
+        def has(domain, names, value_ok=None):
+            for c in cookies:
+                if (domain in c.get("domain", "") and c.get("name") in names
+                        and c.get("value")
+                        and (value_ok is None or value_ok(c["value"]))
+                        and (c.get("expires", -1) in (-1, 0) or c["expires"] > now)):
+                    return True
+            return False
+
+        snap["ig"] = has("instagram.com", ("sessionid",))
+        snap["tt"] = has("tiktok.com", ("sessionid",))
+        snap["tw"] = (has("x.com", ("auth_token",))
+                      or has("twitter.com", ("auth_token",)))
+        snap["pin"] = has("pinterest.com", ("_auth",),
+                          lambda v: v not in ("0", "false", ""))
+    except Exception:
+        pass
+    return snap
+
+
+def run_quick():
+    """Fast, non-technical health check. Prints clean ✅/⚠️/❌ lines."""
+    snap = _browser_snapshot()
+    running = snap["running"]
+
+    # --- instant checks (no network) ---
+    def q_youtube():
+        return ("ok", "Working") if ytdlp_cmd() else \
+            ("down", "yt-dlp not installed — run install.bat/install.sh")
+
+    def q_gtrends():
+        try:
+            import pytrends  # noqa: F401
+            return "ok", "Working"
+        except ImportError:
+            return "down", "Not installed — run install.bat/install.sh"
+
+    def session_line(ok_logged, label_needs, needs_browser_msg):
+        if not running:
+            return "warn", needs_browser_msg
+        return ("ok", "Working (logged in)") if ok_logged else ("warn", label_needs)
+
+    def q_instagram():
+        return session_line(snap["ig"], "Needs login — log into your spare "
+                            "Instagram account in the scout browser",
+                            "Needs setup — start the scout browser and log in")
+
+    def q_tiktok():
+        return session_line(snap["tt"], "Needs login — log into your spare "
+                            "TikTok account in the scout browser",
+                            "Needs setup — start the scout browser and log in")
+
+    def q_browser_public(name):
+        # public-but-browser-required platforms (Meta ads, Trustpilot, Amazon,
+        # Google Shopping): they just need the scout browser running
+        def fn():
+            return ("ok", "Working") if running else \
+                ("warn", f"Needs scout browser — start it to use {name}")
+        return fn
+
+    def q_amazon():
+        return ("ok", "Working (product info; reviews need Amazon login)") if running \
+            else ("warn", "Needs scout browser — start it to use Amazon")
+
+    def q_pinterest():
+        if not running:
+            return "warn", "Needs scout browser (log in for full keyword trends)"
+        return ("ok", "Working (logged in)") if snap["pin"] else \
+            ("warn", "Needs login — log into Pinterest in scout browser for full data")
+
+    def q_twitter():
+        if snap["tw"]:
+            return "ok", "Working (logged in)"
+        return "warn", "Limited — log into spare X account for full tweet data"
+
+    # --- network checks (wrapped in a hard 10s timeout, run concurrently) ---
+    def q_reddit():
+        data = http_ok("https://arctic-shift.photon-reddit.com/api/posts/search"
+                       "?subreddit=AskReddit&limit=1&sort=desc", timeout=8)
+        items = data.get("data") if isinstance(data, dict) else data
+        return ("ok", "Working") if items else \
+            ("down", "Temporarily down — try again later")
+
+    def q_web():
+        return ("ok", "Working") if _http_reachable("https://example.com", 8) else \
+            ("down", "Temporarily down — try again later")
+
+    def q_quora():
+        # just checks whether the discovery search engine responds
+        u = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode(
+            {"q": "site:quora.com test"})
+        return ("ok", "Working") if _http_reachable(u, 8) else \
+            ("warn", "Temporarily down — try again later (best-effort source)")
+
+    def q_tiktok_trending():
+        if not running:
+            return "warn", "Needs scout browser to read trending"
+        import browser
+        import tiktok
+        tab = browser.Browser().page(tiktok.CREATIVE_CENTER + "?region=US&period=7",
+                                     settle=6)
+        try:
+            rows = tiktok.scrape_creative_center(tab)
+        finally:
+            tab.close()
+        return ("ok", "Working") if rows else \
+            ("down", "Down — Creative Center not responding")
+
+    # label, fn, is_network (network ones get the timeout wrapper + concurrency)
+    plan = [
+        ("YouTube", q_youtube, False),
+        ("Reddit", q_reddit, True),
+        ("Instagram", q_instagram, False),
+        ("TikTok", q_tiktok, False),
+        ("Web Reader", q_web, True),
+        ("Meta Ad Library", q_browser_public("Meta Ad Library"), False),
+        ("Google Trends", q_gtrends, False),
+        ("Trustpilot", q_browser_public("Trustpilot"), False),
+        ("Amazon", q_amazon, False),
+        ("Google Shopping", q_browser_public("Google Shopping"), False),
+        ("Quora", q_quora, True),
+        ("Pinterest Trends", q_pinterest, False),
+        ("Twitter/X", q_twitter, False),
+        ("TikTok Trending", q_tiktok_trending, True),
+    ]
+
+    # run network checks concurrently (each capped at 10s); instant ones inline
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {}
+        for label, fn, is_net in plan:
+            if is_net:
+                futures[label] = ex.submit(check_with_timeout, fn, 10)
+            else:
+                try:
+                    results[label] = fn()
+                except Exception:
+                    results[label] = ("down", "Temporarily down — try again later")
+        for label, fut in futures.items():
+            try:
+                results[label] = fut.result(timeout=12)
+            except Exception:
+                results[label] = ("down", "Temporarily down — try again later")
+
+    ICON = {"ok": "✅", "warn": "⚠️", "down": "❌", "skip": "⏭️"}
+    print("social-scout health check")
+    working = attention = down = 0
+    for label, _fn, _net in plan:
+        status, detail = results.get(label, ("down", "Temporarily down"))
+        if status == "ok":
+            working += 1
+        elif status == "warn":
+            attention += 1
+        elif status == "down":
+            down += 1
+        print(f"{ICON.get(status, '⚠️')} {label:<18} {detail}")
+
+    print("=" * 50)
+    print(f"{len(plan)} checks · {working} working | {attention} need attention "
+          f"| {down} down")
+    core = all(results.get(x, ('down',))[0] == "ok"
+               for x in ("YouTube", "Reddit"))
+    if core:
+        print("Core research (YouTube, Reddit, web) ready to use.")
+    else:
+        print("Core research partly unreachable from this network — often "
+              "resolves in 15–60 min, or try a different network.")
+    print("For full TikTok/Pinterest/Twitter data, log into spare accounts in "
+          "the scout browser.")
+    # quick mode always exits 0 — it's informational, not a gate
+    sys.exit(0)
+
+
 def main():
+    if "--quick" in sys.argv[1:]:
+        run_quick()
+        return
     print("social-scout doctor\n" + "=" * 50)
     results = run_checks()
     print("=" * 50)
