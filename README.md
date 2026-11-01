@@ -86,13 +86,13 @@ Claude does the rest.
 ### Step 1 — Install Python 3.11
 
 **Windows**
-1. Download the `.exe` above and double-click it.
+1. Run the Python 3.11 installer for Windows from python.org.
 2. ⚠️ **On the very first screen, tick the box "Add python.exe to PATH".** This
    is the most-missed step — don't skip it.
 3. Click **Install Now** and wait for "Setup was successful".
 
 **Mac**
-1. Download the `.pkg` above and double-click it.
+1. Run the Python 3.11 installer for Mac from python.org.
 2. Click **Continue → Continue → Agree → Install**, then enter your password.
 
 **Verify it worked** (open Command Prompt on Windows / Terminal on Mac):
@@ -319,7 +319,7 @@ For whoever is running the onboarding call, tick these off:
 
 - [ ] Member is screen sharing
 - [ ] Python 3.11 installed, version verified (`python --version` → 3.11.9)
-- [ ] Folder unzipped to the correct location
+- [ ] Folder placed in the correct location
 - [ ] `install.bat` / `install.sh` ran successfully
 - [ ] `mcp_server.py` test passed (blank blinking screen)
 - [ ] Config JSON pasted with **both** paths correct
