@@ -26,19 +26,9 @@ upgrades Pinterest to per-keyword trends and Twitter/X to full tweet text +
 engagement. Instagram/TikTok **do** require a spare-account login; Amazon
 reviews require any Amazon login.
 
-## Download / install
+## Install
 
-Clone the private repo (recommended — easy to `git pull` updates):
-
-```bash
-git clone https://github.com/zaidrazavi/social-scout.git
-```
-
-Or grab a ZIP from GitHub: **Code ▸ Download ZIP** on
-[github.com/zaidrazavi/social-scout](https://github.com/zaidrazavi/social-scout),
-or directly [main.zip](https://github.com/zaidrazavi/social-scout/archive/refs/heads/main.zip).
-
-Then follow the **"🖥️ Claude Desktop App Setup (MCP Server)"** section just
+Follow the **"🖥️ Claude Desktop App Setup (MCP Server)"** section just
 below (double-click `install.bat` / `install.sh`, then point Claude Desktop at
 `mcp_server.py`). Power users can instead drop the folder into their Claude
 Code skills directory — see [Install (Claude Code / terminal)](#install-claude-code--terminal).
@@ -85,9 +75,9 @@ Claude does the rest.
 
 | You need | Notes |
 |---|---|
-| **Python 3.11** | ⚠️ Use **3.11 specifically** — not 3.12 or 3.13 (they have compatibility issues with this tool). Windows: [python-3.11.9-amd64.exe](https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe) · Mac: [python-3.11.9-macos11.pkg](https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg) |
+| **Python 3.11** | ⚠️ Use **3.11 specifically** — not 3.12 or 3.13 (they have compatibility issues with this tool). Install it from python.org. |
 | **Google Chrome** | Only needed for Instagram/TikTok. |
-| **Claude Desktop App** | Download from [claude.ai/download](https://claude.ai/download). |
+| **Claude Desktop App** | The official Claude desktop app. |
 
 ---
 
@@ -132,7 +122,7 @@ which python3.11
 
 ### Step 2 — Install Social Scout
 
-**A) Unzip the folder** to a permanent location (not Downloads):
+**A) Put the folder** in a permanent location:
 
 - Windows: `C:\Users\USERNAME\Documents\social-scout`
 - Mac: `/Users/USERNAME/Documents/social-scout`
