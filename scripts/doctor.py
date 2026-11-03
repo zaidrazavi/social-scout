@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Health check for the social-scout skill.
 
-Verifies that every backend both platforms depend on is reachable and working:
-  1. Python version
-  2. yt-dlp installed (binary or module)
-  3. YouTube search (live query via yt-dlp)
-  4. YouTube captions (live metadata fetch, checks caption tracks exist)
-  5. Arctic Shift API (primary Reddit backend)
-  6. Pullpush API (fallback Reddit backend)
+Verifies that every backend the platforms depend on is reachable and working
+— YouTube (yt-dlp), Reddit (Arctic Shift / Pullpush), the scout browser and
+its logins, the stealth browser (Obscura, optional), web reading, and each
+research platform. See CHECKS below for the full list.
 
 Exit code 0 = both platforms usable, 1 = something core is broken.
 Run:  python scripts/doctor.py
@@ -108,6 +105,19 @@ def check_pullpush():
     items = data.get("data") if isinstance(data, dict) else data
     ok = isinstance(items, list) and len(items) > 0
     return ok, "responding with data" if ok else "responded but no data"
+
+
+def check_reddit_stealth():
+    """Reddit's own search page in the stealth browser — the first tier for
+    global keyword search, so Pullpush being down doesn't matter."""
+    if not _stealth_installed():
+        return "INFO", ("stealth browser not installed — global keyword search "
+                        "then relies on Reddit .json / Pullpush")
+    import reddit
+    items = reddit.fetch_reddit_stealth("skincare", None, 3)
+    if items:
+        return True, f"Reddit search page renders ({len(items)} live results)"
+    return "WARN", "stealth browser couldn't read Reddit search right now"
 
 
 # --- browser / session platforms (Instagram, TikTok) -----------------------
@@ -213,10 +223,43 @@ def check_amazon():
     return "WARN", "fetched a page but no product title — Amazon markup may have changed"
 
 
+def _stealth_installed():
+    try:
+        import obscura
+        return obscura.is_installed()
+    except Exception:
+        return False
+
+
+def check_stealth_browser():
+    """Obscura: optional, but powers web_render/web_screenshot/
+    web_scrape_many and lets Meta/Pinterest/X run without Chrome."""
+    import obscura
+    if not obscura.is_installed():
+        return "INFO", ("not installed (optional) — enables JS-page reading, "
+                        "screenshots, bulk scraping, and Chrome-free Meta/"
+                        "Pinterest/X. Fix: python scripts/obscura.py install")
+    text = obscura.fetch("https://example.com", dump="markdown", timeout=20)
+    if "Example Domain" in text or "documentation examples" in text:
+        return True, f"v{obscura.version()} installed — renders pages headless"
+    return False, "installed but couldn't render a test page — reinstall with --force"
+
+
 def check_meta_ads():
-    """Load the public Ad Library in the scout browser and confirm it renders.
-    Needs the scout browser running (no Facebook login required)."""
+    """Load the public Ad Library and confirm it renders — headless in the
+    stealth browser when installed, else in the scout browser."""
     import browser
+    if _stealth_installed():
+        import meta_ads
+        url = ("https://www.facebook.com/ads/library/?active_status=active"
+               "&ad_type=all&country=US&q=soap&media_type=all")
+        ads = meta_ads.read_ads_stealth(url, 3)
+        if ads:
+            return True, f"renders in the stealth browser ({len(ads)} ads, no Chrome needed)"
+        if not browser.is_running():
+            return "WARN", ("stealth browser couldn't load it and the scout "
+                            "browser isn't running — start it with "
+                            "python scripts/browser.py launch")
     if not browser.is_running():
         return "WARN", ("needs the scout browser — start it with "
                         "python scripts/browser.py launch (no login needed)")
@@ -283,11 +326,19 @@ def check_google_shopping():
 
 def check_pinterest():
     import browser
-    if not browser.is_running():
-        return "WARN", "needs the scout browser (python scripts/browser.py launch)"
-    if browser.Browser().pinterest_logged_in():
+    running = browser.is_running()
+    if running and browser.Browser().pinterest_logged_in():
         return True, "logged in — full per-keyword trends available"
     import pinterest_trends as pt
+    if _stealth_installed():
+        body = pt.read_trends_stealth("https://trends.pinterest.com/?country=US")
+        if body:
+            return True, (f"public spotlight via the stealth browser "
+                          f"({len(pt.parse_spotlight(body))} terms, no Chrome "
+                          "needed) — log into Pinterest in the scout browser "
+                          "for per-keyword trends")
+    if not running:
+        return "WARN", "needs the scout browser (python scripts/browser.py launch)"
     trends = pt.parse_spotlight(pt.load_trends("US"))
     if trends:
         return True, (f"public spotlight only ({len(trends)} terms) — log into "
@@ -298,9 +349,15 @@ def check_pinterest():
 def check_twitter():
     """Login upgrades Twitter to full data; without it, Nitter/web fallbacks."""
     import browser
+    if browser.is_running() and browser.Browser().twitter_logged_in():
+        return True, "logged into X — full tweet data + engagement available"
+    if _stealth_installed():
+        import twitter
+        tweets, _src, _prof = twitter.try_x_com_stealth("https://x.com/NASA", 2)
+        if tweets:
+            return True, ("profiles + exact engagement via the stealth browser; "
+                          "search still limited without an X login")
     if browser.is_running():
-        if browser.Browser().twitter_logged_in():
-            return True, "logged into X — full tweet data + engagement available"
         return True, ("limited — no X login; uses Nitter/web-search fallbacks. "
                       "Log into a spare X account in the scout browser for full "
                       "tweet data")
@@ -339,6 +396,7 @@ CHECKS = [
     ("YouTube captions", check_youtube_captions, "youtube"),
     ("Arctic Shift API (Reddit primary)", check_arctic_shift, "reddit"),
     ("Pullpush API (Reddit fallback)", check_pullpush, "reddit"),
+    ("Reddit search (stealth browser)", check_reddit_stealth, "reddit_search"),
     ("Chrome installed", check_chrome_installed, "browser"),
     ("Scout browser (CDP)", check_scout_browser, "browser"),
     ("Instagram login", check_instagram_login, "instagram"),
@@ -346,6 +404,7 @@ CHECKS = [
     ("TikTok impersonation (yt-dlp)", check_tiktok_impersonation, "tiktok"),
     ("TikTok Creative Center (trending)", check_creative_center, "tiktok_cc"),
     ("Web reader", check_webread, "web"),
+    ("Stealth browser (Obscura)", check_stealth_browser, "stealth"),
     ("Quora discovery (best-effort)", check_quora_discovery, "quora"),
     ("Amazon product pages", check_amazon, "amazon"),
     ("Meta Ad Library", check_meta_ads, "meta"),
@@ -382,11 +441,18 @@ def verdicts(r):
     lines.append(("YouTube", "READY" if ok("youtube") else "BROKEN"))
 
     reddit = [s == "OK" for s in r.get("reddit", [])]
+    search_ok = ok("reddit_search")
     if all(reddit):
         lines.append(("Reddit", "READY"))
+    elif any(reddit) and search_ok:
+        lines.append(("Reddit", "READY (an archive is down — the stealth browser "
+                                "covers global keyword search)"))
     elif any(reddit):
-        lines.append(("Reddit", "READY (one backend down — fallback covers you, "
-                                "but global keyword search needs Pullpush)"))
+        lines.append(("Reddit", "READY (one backend down — global keyword search "
+                                "needs Pullpush or the stealth browser)"))
+    elif search_ok:
+        lines.append(("Reddit", "LIMITED — archives down; keyword search still "
+                                "works via the stealth browser"))
     else:
         lines.append(("Reddit", "BROKEN"))
 
@@ -400,6 +466,16 @@ def verdicts(r):
     if not ok("tiktok_cc"):
         lines.append(("TikTok trending", "NOT READY — Creative Center check failed"))
     lines.append(("Web reading", "READY" if ok("web") else "BROKEN"))
+    stealth = r.get("stealth", ["FAIL"])
+    if all(s == "OK" for s in stealth):
+        lines.append(("Stealth browser", "READY (web_render / web_screenshot / "
+                                         "web_scrape_many)"))
+    elif all(s == "INFO" for s in stealth):
+        lines.append(("Stealth browser", "NOT INSTALLED (optional) — python "
+                                         "scripts/obscura.py install"))
+    else:
+        lines.append(("Stealth browser", "BROKEN — reinstall: python "
+                                         "scripts/obscura.py install --force"))
     lines.append(("Quora", "BEST-EFFORT (working)" if ok("quora")
                   else "BEST-EFFORT (currently down — expected occasionally)"))
     amazon = r.get("amazon", ["FAIL"])
@@ -411,10 +487,11 @@ def verdicts(r):
 
     meta = r.get("meta", ["FAIL"])
     if all(s == "OK" for s in meta):
-        lines.append(("Meta Ad Library", "READY (needs scout browser, no login)"))
+        lines.append(("Meta Ad Library", "READY (stealth or scout browser, no login)"))
     else:
-        lines.append(("Meta Ad Library", "NOT READY — start the scout browser "
-                                         "(public, no Facebook login needed)"))
+        lines.append(("Meta Ad Library", "NOT READY — install the stealth browser "
+                                         "or start the scout browser (public, "
+                                         "no Facebook login needed)"))
 
     gt = r.get("gtrends", ["FAIL"])
     if all(s == "OK" for s in gt):
@@ -430,7 +507,8 @@ def verdicts(r):
                   else "LIMITED — Google's Shopping layout not parsing right now"))
     lines.append(("Pinterest Trends", "READY (full if logged in, else public "
                   "spotlight)" if ok("pinterest")
-                  else "NOT READY — start the scout browser (login optional)"))
+                  else "NOT READY — install the stealth browser or start the "
+                       "scout browser (login optional)"))
     lines.append(("Twitter/X", "READY (full if X logged in, else best-effort "
                   "via Nitter/web)" if ok("twitter")
                   else "BEST-EFFORT (no browser + Nitter down — web-search only)"))
@@ -500,6 +578,13 @@ def run_quick():
     """Fast, non-technical health check. Prints clean ✅/⚠️/❌ lines."""
     snap = _browser_snapshot()
     running = snap["running"]
+    stealth = _stealth_installed()   # instant: just checks the binary exists
+
+    def q_stealth():
+        return ("ok", "Installed — JS pages, screenshots, bulk scraping") if stealth \
+            else ("warn", "Not installed (optional) — ask to run "
+                          "stealth_browser_install for JS pages, screenshots, "
+                          "and Chrome-free Meta/Pinterest/X")
 
     # --- instant checks (no network) ---
     def q_youtube():
@@ -528,10 +613,13 @@ def run_quick():
                             "TikTok account in the scout browser",
                             "Needs setup — start the scout browser and log in")
 
-    def q_browser_public(name):
+    def q_browser_public(name, stealth_ok=False):
         # public-but-browser-required platforms (Meta ads, Trustpilot, Amazon,
-        # Google Shopping): they just need the scout browser running
+        # Google Shopping): they need the scout browser running — or, for the
+        # ones that render headless (stealth_ok), the stealth browser
         def fn():
+            if stealth_ok and stealth:
+                return "ok", "Working (stealth browser — no Chrome needed)"
             return ("ok", "Working") if running else \
                 ("warn", f"Needs scout browser — start it to use {name}")
         return fn
@@ -541,14 +629,21 @@ def run_quick():
             else ("warn", "Needs scout browser — start it to use Amazon")
 
     def q_pinterest():
+        if running and snap["pin"]:
+            return "ok", "Working (logged in)"
+        if stealth:
+            return "warn", ("Public trends work (stealth browser) — log into "
+                            "Pinterest in scout browser for keyword trends")
         if not running:
             return "warn", "Needs scout browser (log in for full keyword trends)"
-        return ("ok", "Working (logged in)") if snap["pin"] else \
-            ("warn", "Needs login — log into Pinterest in scout browser for full data")
+        return "warn", "Needs login — log into Pinterest in scout browser for full data"
 
     def q_twitter():
         if snap["tw"]:
             return "ok", "Working (logged in)"
+        if stealth:
+            return "warn", ("Profiles work (stealth browser) — log into spare "
+                            "X account for search + full data")
         return "warn", "Limited — log into spare X account for full tweet data"
 
     # --- network checks (wrapped in a hard 10s timeout, run concurrently) ---
@@ -591,7 +686,8 @@ def run_quick():
         ("Instagram", q_instagram, False),
         ("TikTok", q_tiktok, False),
         ("Web Reader", q_web, True),
-        ("Meta Ad Library", q_browser_public("Meta Ad Library"), False),
+        ("Stealth Browser", q_stealth, False),
+        ("Meta Ad Library", q_browser_public("Meta Ad Library", stealth_ok=True), False),
         ("Google Trends", q_gtrends, False),
         ("Trustpilot", q_browser_public("Trustpilot"), False),
         ("Amazon", q_amazon, False),

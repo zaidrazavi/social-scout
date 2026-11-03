@@ -44,6 +44,28 @@ if ! "$PY" -m pip install -r requirements.txt --break-system-packages; then
     exit 1
 fi
 
+# --- 3. Optional: the stealth browser ------------------------------------
+echo
+echo "-----------------------------------------------------------"
+echo "  Optional: the stealth browser (about 73 MB from GitHub)"
+echo "  Reads JavaScript-heavy pages, takes screenshots, scrapes"
+echo "  many URLs at once, and runs Meta Ad Library / Pinterest /"
+echo "  X profiles without opening Chrome. You can add it later."
+echo "-----------------------------------------------------------"
+STEALTH=""
+read -r -p "Install the stealth browser now? [Y/n] " STEALTH || STEALTH="n"
+case "$STEALTH" in
+    [nN]|[nN][oO]) ;;
+    *)
+        if "$PY" scripts/obscura.py install; then
+            echo "[OK] Stealth browser installed."
+        else
+            echo "[!] The stealth browser didn't install - everything else still works."
+            echo "    Try again later with:  $PY scripts/obscura.py install"
+        fi
+        ;;
+esac
+
 echo
 echo "==========================================================="
 echo "  [OK] Install complete!"

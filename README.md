@@ -1,24 +1,37 @@
 # Social Scout
 
 A Claude Code skill (and Claude Desktop MCP server) for **manual, on-demand
-research scraping** across **11 platforms / 34 tools** — no API keys, no paid
-services, no credentials in this repo:
+research scraping** across **11 platforms + any public web page / 38 tools**
+— no API keys, no paid services, no credentials in this repo:
 
 | Platform | What you get | Auth needed | Reliability |
 |---|---|---|---|
 | YouTube | search, video stats, transcripts, channel uploads | none | solid (yt-dlp) |
-| Reddit | keyword search, subreddit feeds, comments | none | solid (Arctic Shift → Pullpush → Reddit `.json` fallback) |
+| Reddit | keyword search (live scores), subreddit feeds, comments | none | solid (stealth browser + Arctic Shift → Reddit `.json` → scout browser → Pullpush last) |
 | Instagram | reel/post caption, like/comment/view counts, top comments, video + transcript, hashtag discovery | **spare account** in scout browser | good, session-based |
 | TikTok | video caption, like/comment/share/view counts, hashtags, top comments, video + transcript, trending hashtags | **spare account** in scout browser (trending needs no login) | good, session-based |
 | Amazon | product info (title, price, rating, breakdown, bullets); reviews by star | product: none · **reviews: Amazon login** in scout browser | good (product solid; reviews gated) |
-| Meta Ad Library | active FB/IG competitor ads: text, page, run date, media type | none (scout browser, no FB login) | good |
+| Meta Ad Library | active FB/IG competitor ads: text, page, run date, media type | none (stealth browser, else scout browser; no FB login) | good |
 | Google Trends | interest over time, compare keywords, related/rising queries, by region | none | good (pytrends; rate-limits — use sparingly) |
 | Trustpilot | brand overview (rating, breakdown, categories); reviews by star | none (scout browser fallback) | solid |
 | Google Shopping | product search: title, price, seller | none (scout browser) | good |
 | Pinterest Trends | trending spotlight + per-keyword related trends | none; **optional Pinterest login** upgrades to per-keyword | session-upgradable |
-| Twitter/X | tweet search + user timeline (text, engagement) | none; **optional X login** upgrades to full data | ⚠️ best-effort → good with login |
+| Twitter/X | tweet search + user timeline (text, engagement); profile stats | none; **optional X login** upgrades to full data | profiles good (stealth browser) · search ⚠️ best-effort → good with login |
 | Quora | question + visible answer text on a topic | none | ⚠️ **best-effort only** |
-| Any webpage | clean readable text from a single URL | none | good (Jina Reader + local fallback) |
+| Any webpage | clean readable text from a single URL | none | good (Jina Reader → stealth browser → local fallback) |
+| Any webpage, rendered | JS-heavy pages as markdown, CSS/JS extraction, screenshots, bulk scraping of URL lists | none (optional **stealth browser**, ~73 MB) | good on public sites · can't pass logins/CAPTCHAs |
+
+**The stealth browser (optional).** [Obscura](https://github.com/h4ckf0r0day/obscura)
+is a lightweight headless browser (Rust + V8, ~30 MB RAM, no window). Install
+it once with `python scripts/obscura.py install` (or the prompt at the end of
+`install.bat` / `install.sh`, or ask Claude to run `stealth_browser_install`)
+— it downloads the pinned release from GitHub and checks it against the
+SHA-256 GitHub publishes, into `%LOCALAPPDATA%\social-scout\bin` (never the
+repo). It adds `web_render`, `web_screenshot` and `web_scrape_many`, makes
+`web_read` succeed on JavaScript pages, and lets Meta Ad Library, Pinterest
+Trends and X profiles run **without opening Chrome**. It does **not** get
+past logins or "verify you are human" pages, so Instagram, TikTok, Amazon
+reviews, Google Shopping, Quora and Trustpilot keep their existing paths.
 
 **Optional login upgrades** (never required — these work in degraded mode
 without it): logging a **spare Pinterest / X account** into the scout browser
@@ -291,6 +304,10 @@ Once set up, type things like:
 - "What's Twitter/X saying about handmade soap" · "recent tweets from @handle"
 - "What is Quora saying about soap business tips"
 - "Read this webpage for me: [url]"
+- "Screenshot this landing page [url]" · "full-page screenshot of [url]"
+- "Pull every product name and price from [url]" (stealth browser + a CSS selector)
+- "Get the title, description and main headline for each of these 20 URLs: …"
+- "Read [url] using my login from the scout browser" (any site except IG/TikTok/FB/X/Pinterest/Amazon)
 - "Run the social scout health check"
 
 ---
@@ -308,6 +325,9 @@ Once set up, type things like:
 | **Instagram/TikTok "scout browser not running"** | The MCP normally opens Chrome automatically. If it doesn't, run `python scripts/browser.py launch` from the social-scout folder. |
 | **Instagram "not logged in"** | Log into your spare account in the Chrome window that opened. One-time per machine. |
 | **Quora returns nothing** | Normal — Quora is best-effort. Try again or broaden the topic. |
+| **"The stealth browser … isn't installed"** | Ask Claude to run `stealth_browser_install`, or run `python scripts/obscura.py install` in the social-scout folder (one-time, ~73 MB). |
+| **"A security check is waiting in the scout browser"** | A CAPTCHA / "verify you're human" page is open in the Chrome window. Complete it there yourself, then ask Claude to try again. |
+| **"…showed a security check / bot check page"** | You turned off the Chrome fallback (`chrome_fallback=false`), so the stealth browser stopped at the check. Retry without it to pass the check in Chrome. |
 | **YouTube "Sign in to confirm you're not a bot"** | Run `pip install -U yt-dlp` in CMD/Terminal. |
 | **"Python was not found"** | Python isn't installed or isn't on PATH. Reinstall Python 3.11 with **"Add python.exe to PATH"** ticked. |
 
@@ -326,6 +346,7 @@ For whoever is running the onboarding call, tick these off:
 - [ ] VS Code in trusted mode (if it prompted)
 - [ ] Claude Desktop **fully quit** and reopened
 - [ ] Settings → Developer shows **"Running"**
+- [ ] Stealth browser installed (optional — the installer's last prompt)
 - [ ] Health check returns YouTube / Reddit READY
 - [ ] Instagram command → Chrome opened → spare account logged in
 - [ ] Instagram command retried → results returned
@@ -342,6 +363,30 @@ runs the script **on your laptop** (not in the cloud). That's why a Chrome
 window can open on your screen and why your logins persist between sessions.
 YouTube, Reddit, Quora, and web reading don't need Chrome or any login — they
 work through public sources.
+
+There are two browsers, for two different jobs:
+
+- **Scout browser** — a real Chrome window with your spare-account logins.
+  Instagram, TikTok and Amazon reviews always use it.
+- **Stealth browser** (optional) — a small headless engine with no window and
+  no login, started for a single request and closed right after. It renders
+  public pages (JavaScript included), takes screenshots and scrapes URL lists,
+  and stands in for Chrome on Meta Ad Library, Pinterest Trends, X profiles
+  and Reddit keyword search. If it's missing or a site bounces it, those
+  tools quietly fall back to the scout browser.
+
+**Security checks are passed by you, never by software.** When the scout
+browser lands on a CAPTCHA or "verify you're human" page, the tool brings
+the Chrome window to the front and waits (up to 90 seconds) for you to
+complete it — then carries on by itself. If you're away, it stops with a
+plain message and leaves the check open in Chrome for you to finish before
+retrying. A solved session usually stays trusted for a while. The same goes
+for `web_render` / `web_screenshot`: if a site shows the stealth browser a
+check, the page is reopened in Chrome for you to pass.
+
+> Windows sometimes stops apps from jumping to the front. If a request seems
+> to be "thinking" for a while, glance at the Chrome window — a check may be
+> waiting for you.
 
 ---
 
@@ -400,6 +445,20 @@ never a silent empty result.
 
 - `JINA_API_KEY` env var — raises the web reader's free rate limit
   (~20 pages/min without it). Not required.
+- **Stealth browser** — `python scripts/obscura.py install` (pinned release,
+  SHA-256 verified; `--version latest` to try newer, `--force` to reinstall).
+  `python scripts/obscura.py status` shows what's installed. Commands:
+  `render <url>` (markdown; `--extract CSS`, `--js EXPR`, `--format
+  text|html|links`, `--use-scout-login`), `screenshot <url> [--full-page]`,
+  `scrape <url> <url> …` (or `--file urls.txt`).
+- `SOCIAL_SCOUT_PROXY` env var — route every stealth-browser request through
+  an HTTP or SOCKS5 proxy, e.g. `socks5://127.0.0.1:1080` or
+  `http://user:pass@host:port`. Off unless set. (For Claude Desktop, put it in
+  the `env` block of the MCP config.)
+- `OBSCURA_BIN` env var — use an Obscura binary from somewhere else.
+- `SOCIAL_SCOUT_CHECK_WAIT` env var — seconds to wait for you to complete a
+  security check in the scout browser (default `90`; `0` = don't wait, stop
+  straight away with instructions).
 
 ## Example asks (natural language → what Claude runs)
 
@@ -416,6 +475,9 @@ never a silent empty result.
 - "What's Twitter saying about X" → `twitter.py search "X"` · "tweets from @handle" → `twitter.py user <handle>`
 - "What is Quora saying about morning routines?" → `quora.py search "morning routines"`
 - "Read this page for me <url>" → `webread.py read <url>`
+- "This page comes back empty" / "pull every price from <url>" → `obscura.py render <url>` / `obscura.py render <url> --extract ".price"`
+- "Screenshot <url>" → `obscura.py screenshot <url> [--full-page]`
+- "Titles + descriptions for these URLs" → `obscura.py scrape <url> <url> …`
 - "Find trending YouTube videos about X" / "search Reddit for Y" → `youtube.py` / `reddit.py`
 - "Is the scraper healthy?" → `doctor.py`
 
@@ -443,12 +505,16 @@ accounts are mandatory, not optional.
 |---|---|
 | "Scout browser is not running" | `python scripts/browser.py launch` |
 | "No active Instagram/TikTok login" | log into your spare account in the scout Chrome window (one-time per machine) |
-| IG/TikTok command hits a captcha / verification wall | open the scout window, complete the check by hand, browse a minute like a human, retry |
+| IG/TikTok command hits a captcha / verification wall | the Chrome window comes to the front — complete the check there and the command continues by itself. If it already stopped ("A security check is waiting…"), the check is still open in Chrome: finish it, browse a minute like a human, retry |
 | YouTube commands failing | `pip install -U yt-dlp` (extractor breakage is almost always fixed upstream), then rerun the doctor |
-| Reddit global search fails | Pullpush (the archive that searches all of Reddit) is down; the code then tries Reddit's own `.json`, but that's a lightweight fallback Reddit may block — retry with specific `--subreddit` names (which also use Arctic Shift) |
+| Reddit global search fails | it runs on the stealth browser first — install it (`python scripts/obscura.py install`) if the doctor says it's missing. Without it, global search depends on Reddit's `.json` (often blocked) and Pullpush (often down); retry with specific `--subreddit` names, which use Arctic Shift |
 | "Reddit is blocking this network" / all Reddit sources failed | both archives were down AND Reddit's `.json` last-resort tier was rate-limited/blocked (common on datacenter/VPN IPs). Wait and retry, or run from a residential connection; the `.json` tier is intentionally not for bulk use |
 | Quora returns nothing | expected occasionally — it's best-effort web search; retry later or broaden the topic |
-| Web reader slow or throttled | free Jina tier is ~20 req/min; set `JINA_API_KEY`, or pass `--local` for direct fetching |
+| Web reader slow or throttled | free Jina tier is ~20 req/min; set `JINA_API_KEY`, or pass `--local` for direct fetching. With the stealth browser installed, Jina misses fall through to it automatically |
+| Stealth-browser command says "isn't installed" | `python scripts/obscura.py install` (one-time) |
+| Stealth browser "didn't start" | `python scripts/obscura.py install --force` to reinstall |
+| "…showed a security check page instead of its content" | the site blocks automated readers; nothing to fix — use the platform's own command, or the scout browser |
+| Stealth-browser requests fail only when `SOCIAL_SCOUT_PROXY` is set | the proxy is down or wrong — check it, or unset the variable |
 | "No transcript possible" | video has no native captions and local Whisper found no speech (music-only/silent), or `faster-whisper` isn't installed (`pip install -r requirements.txt`) |
 | First transcript is slow | one-time Whisper model download; later runs reuse the cache. Set `SOCIAL_SCOUT_WHISPER_MODEL=tiny` for more speed |
 | Doctor shows FAIL on something that worked yesterday | platforms change; run it twice (some backends flap), then open an issue with the doctor output |
@@ -459,7 +525,9 @@ Nothing personal ever belongs in this repo: no cookies, tokens, downloaded
 videos, or browser profiles. The scout Chrome profile lives outside the repo
 (`%LOCALAPPDATA%\social-scout\` / `~/.social-scout/`), temp cookie files are
 created in the OS temp dir and deleted after use, and `downloads/` is
-gitignored. Keep it that way in PRs.
+gitignored (screenshots land in `downloads/screenshots/`). The stealth-browser
+binary also lives outside the repo, in `…\social-scout\bin\`. Keep it that
+way in PRs.
 
 ## Out of scope, permanently
 

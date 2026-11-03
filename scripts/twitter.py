@@ -4,11 +4,15 @@
 Twitter/X blocks scraping aggressively and killed most third-party access, so
 this tries a chain of unreliable sources and reports which one answered:
 
-  1. Nitter mirrors (open-source X frontends) — direct fetch, then the scout
+  1. Stealth browser (scripts/obscura.py, if installed) on x.com — headless,
+     no Chrome window. Logged-out x.com serves profiles (with exact
+     engagement counts + profile stats) but redirects search to a login
+     page, so this tier mostly answers `user`.
+  2. Nitter mirrors (open-source X frontends) — direct fetch, then the scout
      browser to clear their "verify your browser" JS challenge.
-  2. Scout browser on x.com search/profile — public results only, no login;
+  3. Scout browser on x.com search/profile — public results only, no login;
      X shows limited results logged-out.
-  3. Web search (DuckDuckGo, site:x.com) — minimal data, just links + snippets.
+  4. Web search (DuckDuckGo, site:x.com) — minimal data, just links + snippets.
 
 Nitter instances go up and down constantly and X limits logged-out results, so
 expect gaps, missing engagement counts, or total unavailability. Never promise
@@ -205,6 +209,122 @@ def try_x_com(url, limit, settle=8, source="x.com (scout browser, logged out)"):
         return None, None
 
 
+# --------------------------------------------------------------------------
+# x.com stealth-browser tier
+# --------------------------------------------------------------------------
+# x.com serves headless Obscura a lighter markup: <article>s without the
+# data-testid hooks X_EXTRACTOR keys on, but with the tweet's /status/ link
+# and an exact-count engagement summary in an aria-label ("120 replies, 229
+# reposts, 1705 likes, 69 bookmarks, 395154 views"). Read those instead.
+X_LITE_EXTRACTOR = r"""
+(() => {
+  const MAX = __MAX__, out = [], seen = new Set();
+  const NL = String.fromCharCode(10);
+  for (const art of document.querySelectorAll('article')) {
+    if (out.length >= MAX) break;
+    const status = Array.from(art.querySelectorAll('a[href*="/status/"]'))
+      .map(a => a.getAttribute('href')).find(h => /^\/\w+\/status\/\d+$/.test(h));
+    if (!status || seen.has(status)) continue;
+    const lines = (art.innerText || '').split(NL).map(s => s.trim()).filter(Boolean);
+    const hi = lines.findIndex(l => /^@\w+$/.test(l));
+    if (hi < 1) continue;
+    const body = [];
+    for (let j = hi + 2; j < lines.length; j++) {
+      const l = lines[j];
+      if (l === 'ALT' || /^\d{1,2}:\d{2}$/.test(l) || /^[\d.,]+[KMB]?$/.test(l)) break;
+      body.push(l);
+    }
+    const text = body.join(NL).trim();
+    if (!text) continue;
+    seen.add(status);
+    const summary = Array.from(art.querySelectorAll('[aria-label]'))
+      .map(e => e.getAttribute('aria-label') || '')
+      .find(l => /\d+ replies|\d+ reposts|\d+ likes|\d+ views/.test(l)) || '';
+    const num = k => { const m = summary.match(new RegExp('([\\d,]+) ' + k));
+                       return m ? parseInt(m[1].replace(/,/g, '')) : null; };
+    out.push({author: lines[hi], display_name: lines[hi - 1], text: text,
+              date: lines[hi + 1] || null,
+              likes: num('like'), retweets: num('repost'), replies: num('repl'),
+              views: num('view'), url: 'https://x.com' + status,
+              pinned: lines[0] === 'Pinned'});
+  }
+  return out;
+})()
+"""
+
+# Profile header stats, from the same page's visible text.
+X_PROFILE_JS = r"""
+(() => {
+  const t = (document.body && document.body.innerText) || '';
+  const grab = re => { const m = t.match(re); return m ? m[1] : null; };
+  return {posts: grab(/([\d.,]+[KMB]?) posts/), following: grab(/([\d.,]+[KMB]?) Following/),
+          followers: grab(/([\d.,]+[KMB]?) Followers/), joined: grab(/Joined ([A-Z][a-z]+ \d{4})/)};
+})()
+"""
+
+
+def x_date(s, now=None):
+    """'6h' / 'Oct 31' / 'Oct 31, 2024' -> ISO date (X shows relative dates
+    to logged-out visitors). Unparseable input comes back unchanged."""
+    from datetime import datetime, timedelta
+    now = now or datetime.now()
+    s = (s or "").strip()
+    m = re.fullmatch(r"(\d+)([smhd])", s)
+    if m:
+        unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[m.group(2)]
+        return (now - timedelta(**{unit: int(m.group(1))})).date().isoformat()
+    try:
+        return datetime.strptime(s, "%b %d, %Y").date().isoformat()
+    except ValueError:
+        pass
+    try:
+        d = datetime.strptime(f"{s} {now.year}", "%b %d %Y")
+        if d > now + timedelta(days=1):
+            d = d.replace(year=now.year - 1)
+        return d.date().isoformat()
+    except ValueError:
+        return s or None
+
+
+def try_x_com_stealth(url, limit, want_profile=False):
+    """Logged-out x.com in the stealth browser. Returns (tweets, source,
+    profile) or (None, None, None) — never raises, so the chain continues."""
+    try:
+        import obscura
+        if not obscura.is_installed():
+            return None, None, None
+        with obscura.Session() as s:
+            tab = s.page(url, settle=8)
+            try:
+                landed = (tab.eval("location.href") or "").lower()
+                if ("login" in landed or "/i/flow" in landed or "/onboarding" in landed
+                        or "/account/access" in landed):
+                    return None, None, None  # X sends logged-out search to login
+                head = (tab.eval("document.body.innerText") or "")[:400]
+                if any(e in head for e in X_ERROR):
+                    return None, None, None
+                tab.eval("window.scrollTo(0, document.body.scrollHeight)")
+                jitter_sleep(2, 4, "loading x.com results")
+                full = tab.eval(X_EXTRACTOR.replace("__MAX__", str(limit))) or []
+                lite = tab.eval(X_LITE_EXTRACTOR.replace("__MAX__", str(limit))) or []
+                profile = tab.eval(X_PROFILE_JS) if want_profile else None
+            finally:
+                tab.close()
+    except Exception:
+        return None, None, None
+    if lite and len(lite) >= len(full):
+        for t in lite:
+            t["date"] = x_date(t["date"])
+        tweets = lite
+    else:
+        tweets = full
+    if not tweets:
+        return None, None, None
+    if profile and not any(profile.values()):
+        profile = None
+    return tweets[:limit], "x.com (stealth browser, logged out)", profile
+
+
 def twitter_session():
     """The scout Browser if it's running AND has an X login, else None. Never
     launches the browser just to check — login is optional for this scraper."""
@@ -245,31 +365,37 @@ def try_web_search(query, limit):
 # --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
-def run_chain(nitter_path, x_url, limit, web_query=None):
+def run_chain(nitter_path, x_url, limit, web_query=None, want_profile=False):
+    """Returns (tweets, source, profile); profile is only filled by the
+    stealth tier on user pages."""
     # Tier 0 (best data): logged-in x.com in the scout browser — full tweet
     # text + engagement. Only when a spare X account is logged in; optional.
     if twitter_session() is not None:
         tweets, source = try_x_com(x_url, limit, settle=9,
                                    source="x.com (scout browser, logged in)")
         if tweets:
-            return tweets, source
+            return tweets, source, None
         warn("logged into X but no results extracted — falling back...")
-    # Tier 1: Nitter mirrors.
+    # Tier 1: logged-out x.com in the stealth browser (headless; exact counts).
+    tweets, source, profile = try_x_com_stealth(x_url, limit, want_profile)
+    if tweets:
+        return tweets, source, profile
+    # Tier 2: Nitter mirrors.
     tweets, source = try_nitter(nitter_path, limit)
     if tweets:
-        return tweets, source
-    # Tier 2: logged-out x.com (limited public results).
+        return tweets, source, None
+    # Tier 3: logged-out x.com in the scout browser (limited public results).
     warn("Nitter mirrors unavailable — trying x.com logged out...")
     tweets, source = try_x_com(x_url, limit)
     if tweets:
-        return tweets, source
-    # Tier 3: web search (links only).
+        return tweets, source, None
+    # Tier 4: web search (links only).
     if web_query:
         warn("x.com logged-out results unavailable — trying web search...")
         tweets, source = try_web_search(web_query, limit)
         if tweets:
-            return tweets, source
-    return None, None
+            return tweets, source, None
+    return None, None, None
 
 
 def cmd_search(args):
@@ -279,7 +405,7 @@ def cmd_search(args):
         {"q": args.query, "f": "tweets"})
     xurl = ("https://x.com/search?" + urllib.parse.urlencode(
         {"q": args.query, "src": "typed_query", "f": args.sort}))
-    tweets, source = run_chain(npath, xurl, limit, web_query=args.query)
+    tweets, source, _ = run_chain(npath, xurl, limit, web_query=args.query)
     if tweets is None:
         die("Twitter/X is currently unreachable via every fallback (Nitter "
             "mirrors down, x.com logged-out blocked, web search empty). This "
@@ -293,12 +419,14 @@ def cmd_user(args):
     handle = args.handle.lstrip("@")
     npath = f"/{handle}" + ("/with_replies" if args.replies else "")
     xurl = f"https://x.com/{handle}" + ("/with_replies" if args.replies else "")
-    tweets, source = run_chain(npath, xurl, limit,
-                               web_query=f"from:{handle}")
+    tweets, source, profile = run_chain(npath, xurl, limit,
+                                        web_query=f"from:{handle}",
+                                        want_profile=True)
     if tweets is None:
         die(f"Couldn't reach @{handle} via any fallback (Nitter down, x.com "
             "logged-out blocked). Best-effort backend — try again later.")
     emit({"handle": f"@{handle}", "source": source,
+          **({"profile": profile} if profile else {}),
           "includes_replies": bool(args.replies),
           "count": len(tweets), "best_effort": True, "tweets": tweets})
 

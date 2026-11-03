@@ -45,6 +45,27 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM --- 3. Optional: the stealth browser ------------------------------------
+echo.
+echo -----------------------------------------------------------
+echo   Optional: the stealth browser (about 73 MB from GitHub)
+echo   Reads JavaScript-heavy pages, takes screenshots, scrapes
+echo   many URLs at once, and runs Meta Ad Library / Pinterest /
+echo   X profiles without opening Chrome. You can add it later.
+echo -----------------------------------------------------------
+set "STEALTH="
+set /p STEALTH="Install the stealth browser now? [Y/n] "
+if /i "%STEALTH%"=="n" goto :skip_stealth
+if /i "%STEALTH%"=="no" goto :skip_stealth
+python scripts\obscura.py install
+if errorlevel 1 (
+    echo [!] The stealth browser didn't install - everything else still works.
+    echo     Try again later with:  python scripts\obscura.py install
+) else (
+    echo [OK] Stealth browser installed.
+)
+:skip_stealth
+
 echo.
 echo ===========================================================
 echo   [OK] Install complete!

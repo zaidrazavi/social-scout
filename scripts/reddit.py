@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 """Reddit scraping via free public sources — no OAuth, no API key, no account.
 
-PRIMARY:   Arctic Shift  (https://arctic-shift.photon-reddit.com/api)
-FALLBACK:  Pullpush      (https://api.pullpush.io/reddit)
-LAST-RESORT: Reddit's own public .json (https://www.reddit.com/....json)
+Sources, in the order they're tried:
+  stealth browser  Reddit's own search page rendered headless
+                   (scripts/obscura.py, if installed) — keyword search only
+  Arctic Shift     (https://arctic-shift.photon-reddit.com/api)
+  Reddit .json     Reddit's own public .json (https://www.reddit.com/....json)
+  scout browser    same-origin .json fetch in real Chrome, if it's running
+  Pullpush         (https://api.pullpush.io/reddit) — LAST: often down
 
-Every request tries Arctic Shift first; on failure it retries Pullpush; and
-only if BOTH archives fail does it fall back to Reddit's own public .json
-endpoint. Each result reports which source answered ("via").
+Global keyword search tries the stealth browser first (Arctic Shift can't do
+it). Subreddit-scoped search tries Arctic Shift first — it returns full post
+bodies, which the search page doesn't show — then the stealth browser.
+Subreddit feeds and comments skip the stealth browser: Reddit blocks it on
+those pages. Each result reports which source answered ("via").
+
+The stealth tier reads Reddit's live search results (exact current score and
+comment count, exact timestamp) but no post body, so it's skipped for
+--self-only and --before (search can't reach back to a cut-off date). It
+returns the most RELEVANT posts (within the --after window when given).
 
 The Reddit .json tier is deliberately a lightweight last resort, NOT a
 primary path: Reddit rate-limits and can block unauthenticated .json traffic
@@ -19,8 +30,7 @@ Note: .json can't honor precise --after/--before server-side, so date bounds
 are applied client-side to whatever it returns.
 
 Exception: a keyword search across ALL of Reddit skips Arctic Shift (which
-requires a subreddit/author filter for text search) and goes Pullpush ->
-Reddit .json.
+requires a subreddit/author filter for text search).
 
 Subcommands:
   search <query>       Keyword search for posts. Options: --subreddit X[,Y,...],
@@ -256,6 +266,124 @@ def fetch_reddit_browser(json_url, date_range=None, kind="posts"):
     return [it for it in items if within_range(it, date_range)]
 
 
+# Reddit's search page (rendered by the stealth browser) shows 7 results per
+# screen; further results arrive as "load more" fragments — the same request
+# the page itself makes when a person scrolls — fetched here with a human-ish
+# pause between pages. Each result card carries the post's id/title/author/
+# subreddit in a tracking-context attribute, and exact counts/timestamps in
+# faceplate-number / faceplate-timeago attributes.
+SEARCH_PAGE_JS = r"""
+(async () => {
+  const MAX = __MAX__, PAGES = __PAGES__;
+  const read = root => Array.from(root.querySelectorAll('[data-testid="sdui-post-unit"]')).map(u => {
+    const a = u.querySelector('a[data-testid="post-title-text"]') || u.querySelector('a[data-testid="post-title"]');
+    if (!a) return null;
+    let ctx = {};
+    for (const tr of u.querySelectorAll('[data-faceplate-tracking-context]')) {
+      try { const c = JSON.parse(tr.getAttribute('data-faceplate-tracking-context'));
+            if (c.post) { ctx = c; break; } } catch (e) {}
+    }
+    const nums = Array.from(u.querySelectorAll('[data-testid="search-counter-row"] faceplate-number'))
+      .map(n => parseInt(n.getAttribute('number'), 10));
+    const ta = u.querySelector('faceplate-timeago');
+    return {id: ((ctx.post || {}).id || '').replace(/^t3_/, '') || null,
+            title: (ctx.post || {}).title || a.textContent.trim(),
+            author: (ctx.profile || {}).name || null,
+            subreddit: (ctx.subreddit || {}).name || null,
+            permalink: a.getAttribute('href'),
+            score: Number.isFinite(nums[0]) ? nums[0] : null,
+            num_comments: Number.isFinite(nums[1]) ? nums[1] : null,
+            created: ta ? ta.getAttribute('ts') : null};
+  }).filter(Boolean);
+  const nextSrc = root => {
+    const p = root.querySelector('faceplate-partial[src*="/svc/shreddit/search/"][src*="cursor="]');
+    return p ? p.getAttribute('src') : null; };
+  const seen = new Set(), out = [];
+  const add = rows => { for (const r of rows) { const k = r.id || r.permalink;
+                        if (!seen.has(k)) { seen.add(k); out.push(r); } } };
+  add(read(document));
+  const empty = out.length === 0 &&
+    /couldn.t find any results|no results/i.test((document.body || {}).innerText || '');
+  let src = nextSrc(document), pages = 1;
+  while (src && out.length < MAX && pages < PAGES) {
+    await new Promise(r => setTimeout(r, 1500 + Math.random() * 1500));
+    const html = await fetch(src, {credentials: 'include'}).then(r => r.ok ? r.text() : '');
+    if (!html) break;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const before = out.length; add(read(doc)); pages++;
+    if (out.length === before) break;
+    src = nextSrc(doc);
+  }
+  return {rows: out.slice(0, MAX), empty: empty};
+})()
+"""
+
+
+def _ts(value):
+    """'2026-11-03T05:34:57.033000+0000' -> unix seconds."""
+    try:
+        return int(datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp())
+    except (TypeError, ValueError):
+        try:
+            return int(datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z").timestamp())
+        except (TypeError, ValueError):
+            return None
+
+
+def fetch_reddit_stealth(query, subreddit, limit, date_range=None):
+    """Stealth-browser tier: Reddit's own search page, rendered headless.
+    Returns items shaped like Reddit .json posts, [] when Reddit says there
+    are no results, or None (not installed / blocked / nothing parsed) so
+    the next tier runs."""
+    try:
+        import obscura
+        if not obscura.is_installed():
+            return None
+        # Always relevance: Reddit's newest-first search pulls in loose
+        # matches (tested: 1/8 on-topic vs 8/8). A date window uses Reddit's
+        # own time filter — the smallest that covers it — and within_range
+        # trims to the exact --after date below.
+        params = {"q": query, "type": "posts", "sort": "relevance"}
+        after = date_range[0] if date_range else None
+        if after:
+            days = (time.time() - after) / 86400
+            params["t"] = next((t for limit_days, t in ((1, "day"), (7, "week"),
+                                (31, "month"), (366, "year")) if days <= limit_days), "all")
+        if subreddit:
+            params["restrict_sr"] = 1
+            url = (f"{REDDIT}/r/{urllib.parse.quote(subreddit)}/search/?"
+                   + urllib.parse.urlencode(params))
+        else:
+            url = f"{REDDIT}/search/?" + urllib.parse.urlencode(params)
+        pages = min(15, limit // 7 + 2)
+        with obscura.Session() as s:
+            tab = s.page(url, settle=3)
+            try:
+                body = tab.eval("(document.body && document.body.innerText) || ''") or ""
+                if obscura.looks_blocked(body):
+                    return None
+                res = tab.eval(SEARCH_PAGE_JS.replace("__MAX__", str(limit))
+                               .replace("__PAGES__", str(pages)), timeout=180) or {}
+            finally:
+                tab.close()
+    except Exception:
+        return None
+    rows = res.get("rows") or []
+    if not rows:
+        return [] if res.get("empty") else None
+    items = [{"id": r.get("id"), "title": r.get("title"), "author": r.get("author"),
+              "subreddit": r.get("subreddit"), "permalink": r.get("permalink"),
+              "ups": r.get("score"), "num_comments": r.get("num_comments"),
+              "created_utc": _ts(r.get("created")), "is_self": None, "selftext": ""}
+             for r in rows]
+    return [it for it in items if within_range(it, date_range)]
+
+
+def stealth_ok(args):
+    """The search page has no post bodies and lists newest first."""
+    return not args.self_only and not args.before
+
+
 # Shown to the user when every Reddit source is unreachable — deliberately
 # free of HTTP codes and backend names (those only scare non-technical users).
 REDDIT_DOWN_MSG = (
@@ -264,31 +392,32 @@ REDDIT_DOWN_MSG = (
     "network (home WiFi usually works better than office/VPN).")
 
 
-def with_fallback(arctic_url, pullpush_url, reddit_json_fn=None, browser_fn=None):
-    """Try Arctic Shift (with 422 retries) → Pullpush → Reddit's public .json →
-    (optional) the scout browser. Raise a friendly message only if every
+def with_fallback(arctic_url, pullpush_url, reddit_json_fn=None, browser_fn=None,
+                  stealth_fn=None, stealth_first=False):
+    """Try, in order: [stealth browser if stealth_first] → Arctic Shift (with
+    422 retries) → [stealth browser] → Reddit's public .json → (optional) the
+    scout browser → Pullpush, last because it's frequently down. A tier that
+    returns None is skipped. Raise a friendly message only if every
     available source fails."""
+    tiers = []
+    if stealth_fn is not None and stealth_first:
+        tiers.append(("stealth_browser", stealth_fn))
     if arctic_url:
-        try:
-            return fetch_arctic(arctic_url), "arctic_shift"
-        except Exception:
-            pass
-    try:
-        return extract_items(http_json(pullpush_url)), "pullpush"
-    except Exception:
-        pass
+        tiers.append(("arctic_shift", lambda: fetch_arctic(arctic_url)))
+    if stealth_fn is not None and not stealth_first:
+        tiers.append(("stealth_browser", stealth_fn))
     if reddit_json_fn is not None:
-        try:
-            return reddit_json_fn(), "reddit_json"
-        except Exception:
-            pass
+        tiers.append(("reddit_json", reddit_json_fn))
     if browser_fn is not None:
+        tiers.append(("scout_browser", browser_fn))
+    tiers.append(("pullpush", lambda: extract_items(http_json(pullpush_url))))
+    for via, fn in tiers:
         try:
-            items = browser_fn()
-            if items is not None:
-                return items, "scout_browser"
+            items = fn()
         except Exception:
-            pass
+            continue
+        if items is not None:
+            return items, via
     raise SystemExit(REDDIT_DOWN_MSG)
 
 
@@ -326,20 +455,25 @@ def cmd_search(args):
                 "q": args.query, "restrict_sr": 1, "sort": "new", "limit": limit})
             rj = lambda u=rj_url: fetch_reddit_json(u, (after, before))
             bj = lambda u=rj_url: fetch_reddit_browser(u, (after, before), "posts")
-            items, via = with_fallback(a_url, p_url, rj, bj)
+            sj = (lambda s=sub: fetch_reddit_stealth(args.query, s, limit, (after, before))
+                  ) if stealth_ok(args) else None
+            items, via = with_fallback(a_url, p_url, rj, bj, sj)
             all_items.extend(items)
             via_used.add(via)
         emit(all_items, "+".join(sorted(via_used)), "post", args.full, args.min_score, args.self_only)
     else:
         # Global keyword search: Arctic Shift refuses text queries without a
-        # subreddit/author filter, so this goes Pullpush -> Reddit .json.
+        # subreddit/author filter, so the stealth browser (Reddit's own search
+        # page) leads, then Reddit .json, the scout browser, and Pullpush.
         p_url = f"{PULLPUSH}/search/submission/?" + qs({
             "q": args.query, "size": limit, "after": after, "before": before})
         rj_url = f"{REDDIT}/search.json?" + qs({
             "q": args.query, "sort": "new", "limit": limit})
         rj = lambda u=rj_url: fetch_reddit_json(u, (after, before))
         bj = lambda u=rj_url: fetch_reddit_browser(u, (after, before), "posts")
-        items, via = with_fallback(None, p_url, rj, bj)
+        sj = (lambda: fetch_reddit_stealth(args.query, None, limit, (after, before))
+              ) if stealth_ok(args) else None
+        items, via = with_fallback(None, p_url, rj, bj, sj, stealth_first=True)
         emit(items, via, "post", args.full, args.min_score, args.self_only)
 
 

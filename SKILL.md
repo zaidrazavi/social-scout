@@ -6,16 +6,19 @@ description: >
   research, or pull data from any of these: trending/viral videos, video
   transcripts, video stats (views/likes/comments/shares), top comments on a
   reel or TikTok, a channel's uploads, Reddit keyword searches, subreddit
-  posts, trending hashtags for a niche, Quora answers on a topic, or the
-  readable text of any URL. Trigger even when no tool is named — "find videos
-  about X", "what is Reddit/Quora saying about Y", "scrape this reel",
-  "what's trending on TikTok for Z", "get this webpage's content", "run the
-  scraper doctor / health check" all mean this skill. YouTube/Reddit/web
+  posts, trending hashtags for a niche, Quora answers on a topic, the
+  readable text of any URL, a screenshot of a web page, or the same data
+  pulled from a list of URLs. Trigger even when no tool is named — "find
+  videos about X", "what is Reddit/Quora saying about Y", "scrape this reel",
+  "what's trending on TikTok for Z", "get this webpage's content",
+  "screenshot this page", "pull the prices from these 20 product pages", "run
+  the scraper doctor / health check" all mean this skill. YouTube/Reddit/web
   reading/Quora need no login; Instagram and TikTok reuse the user's own
   spare-account Chrome session via the scout browser. Manual, on-demand runs
   only — never schedule or automate it.
 compatibility: Python 3.8+, pip install -r requirements.txt, Google Chrome
-  (only for Instagram/TikTok). Windows/macOS/Linux.
+  (only for Instagram/TikTok), optional stealth browser (python
+  scripts/obscura.py install). Windows/macOS/Linux.
 ---
 
 # Social Scout — free multi-platform research scraping
@@ -68,6 +71,13 @@ on" something — offer a manual re-run instead.
 | "what's Twitter saying about X" / "tweets about handmade soap" | `python scripts/twitter.py search "handmade soap"` |
 | "recent tweets from this account" | `python scripts/twitter.py user <handle>` |
 | "read this webpage / get this URL's content" | `python scripts/webread.py read <url>` |
+| "this page comes back empty / it's a JavaScript app" | `python scripts/obscura.py render <url>` |
+| "pull every price / headline / link matching X from this page" | `python scripts/obscura.py render <url> --extract "<css selector>"` |
+| "run this JavaScript on the page / get a value from the page" | `python scripts/obscura.py render <url> --js "<expression>"` |
+| "read this page I'm logged into (not IG/TikTok/FB/X/Pinterest/Amazon)" | `python scripts/obscura.py render <url> --use-scout-login` |
+| "screenshot this page / what does this landing page look like" | `python scripts/obscura.py screenshot <url> [--full-page]` |
+| "scrape these URLs / get titles+descriptions for this list" | `python scripts/obscura.py scrape <url> <url> ... [--extract "<css>"]` |
+| "install the stealth browser" | `python scripts/obscura.py install` (ask first — ~73 MB download) |
 | "is the scraper working / doctor / health check" | `python scripts/doctor.py` |
 
 Every script documents its full options via `--help`.
@@ -83,6 +93,15 @@ missing — relay that text to the user rather than improvising:
 - "No active … login" → the *user* must log into their dedicated spare
   account in that window — one-time per machine. Never ask for or handle
   their credentials yourself; just point them at the window.
+- **Security checks (CAPTCHA / "verify you're human") are handed to the
+  user, never solved by software.** When a scout-browser page lands on one,
+  the scraper raises the Chrome window, prints "A security check … please
+  complete it in the Chrome window", waits up to 90s
+  (`SOCIAL_SCOUT_CHECK_WAIT`), and carries on by itself once the person has
+  done it. If nobody does, it stops with "A security check is waiting in the
+  scout browser…" and **leaves that tab open** — tell the user to complete
+  it in the Chrome window, then rerun. Never try to click, solve, or work
+  around the check yourself.
 
 Self-throttling is by design: `[throttle] waiting Ns` lines on stderr are
 normal operation, not errors — mention to the user that pacing is intentional
@@ -91,8 +110,10 @@ reason; don't fight the caps.
 
 ## Reliability tiers — set expectations honestly
 
-- **Solid:** YouTube, Reddit (dual archive backends), web reading, Amazon
-  product info, Trustpilot (direct fetch + scout-browser fallback).
+- **Solid:** YouTube, Reddit (Arctic Shift + the stealth browser's live
+  search, with Reddit `.json` / scout browser / Pullpush behind them), web
+  reading, Amazon product info, Trustpilot (direct fetch + scout-browser
+  fallback).
 - **Session-based, good:** Instagram, TikTok, Amazon reviews — need a spare
   account logged into the scout browser; can hit captcha walls (open the
   scout window, complete the check, retry). Google Shopping is browser-based
@@ -108,18 +129,30 @@ reason; don't fight the caps.
   page text only. No vote counts, no full threads, no guarantees. Say so
   when presenting Quora results.
 - Web reading is **single-URL** extraction, not crawling or internet search.
+- **Stealth browser (Obscura, optional):** a headless engine with no window
+  and no login. Solid for ordinary public sites, including JavaScript-heavy
+  ones. It **cannot** get past logins, CAPTCHAs or "verify you are human"
+  pages — Google Shopping, Quora, Trustpilot, Reddit, Amazon, TikTok and
+  logged-out Instagram all show it one, which is why those keep their own
+  paths. Never present it as a way into login-walled data.
 
 ## Platform quirks worth knowing
 
-1. **Reddit source order is Arctic Shift → Pullpush → Reddit's own `.json`.**
-   The third tier (Reddit's public `.json`) is a **lightweight last resort**,
-   not a primary path — it only fires when both archives fail. Reddit
-   rate-limits/blocks unauthenticated `.json`, especially from datacenter/VPN
-   IPs, so it jitters + backs off and may still return a clear "Reddit is
-   blocking this network" error. Don't lean on it for bulk work. For global
-   keyword search Arctic Shift is skipped (it needs a subreddit/author
-   filter), so that path is Pullpush → Reddit `.json`; `--subreddit` lists
-   still give the most reliable searches.
+1. **Reddit source order** (Pullpush is **last** everywhere — it's often down):
+   - **Global keyword search:** stealth browser (Reddit's own search page,
+     live scores) → Reddit `.json` → scout browser → Pullpush. Arctic Shift
+     can't do global text search.
+   - **`--subreddit` search:** Arctic Shift (full post bodies) → stealth
+     browser → Reddit `.json` → scout browser → Pullpush.
+   - **Subreddit feeds / comments:** Arctic Shift → Reddit `.json` → scout
+     browser → Pullpush (Reddit blocks the stealth browser on those pages).
+   The stealth tier gives title/author/subreddit/exact live score/comment
+   count/timestamp but **no post body**, so it's skipped for `--self-only`
+   and `--before`. It returns the **most relevant** posts (within the `--after`
+   window when set), whereas the archives return newest first. Reddit `.json` is a lightweight tier that Reddit often
+   blocks (especially datacenter/VPN IPs) — don't lean on it for bulk work.
+   `via` in the output says which source answered (`stealth_browser`,
+   `arctic_shift`, `reddit_json`, `scout_browser`, `pullpush`).
 2. **Arctic Shift 422s under load** — scripts retry then fall back; don't
    hammer.
 3. **Archive scores are snapshots; Reddit `.json` is live.** Very recent
@@ -145,10 +178,11 @@ reason; don't fight the caps.
    IG/TikTok) — the tool returns a clear message if not. Amazon bot-blocks
    scripted requests, so both commands lean on the running scout browser;
    `--stars 1` surfaces complaints/pain points, `--stars 5` what people love.
-10. **Meta Ad Library** needs the scout browser running but **no Facebook
-    login** (it's public). Platforms (FB/IG) are icon-only on the summary card
-    and usually can't be read — the output says so. Longer `started_running`
-    dates ≈ winning ads. Auto-launches the scout browser if it's down.
+10. **Meta Ad Library** needs **no Facebook login** (it's public). It renders
+    in the stealth browser when installed (no Chrome window), else in the
+    scout browser (auto-launched); the output's `engine` says which.
+    Platforms (FB/IG) are icon-only on the summary card and usually can't be
+    read — the output says so. Longer `started_running` dates ≈ winning ads.
 11. **Google Trends** (via pytrends) rate-limits hard — use sparingly; on a
     429 it backs off then returns a clear "rate-limited, retry later" message.
     Numbers are **relative interest 0-100, not absolute search volume**;
@@ -160,18 +194,42 @@ reason; don't fight the caps.
     and returns product title/price/seller consistently. Prices are
     region/IP-dependent; ratings often don't render. Still supplementary —
     don't treat it as authoritative pricing.
-14. **Pinterest Trends** needs the scout browser. **Login is optional and
-    upgrades it:** logged into a Pinterest account → full per-keyword related
+14. **Pinterest Trends** — **login is optional and upgrades it:** logged into
+    a Pinterest account in the scout browser → full per-keyword related
     trends (`source: logged-in`); logged out → the **public regional
-    spotlight** matched to the query (`source: public spotlight`). Either way,
-    relative signals, not exact volumes. The interest chart is an SVG and
-    isn't extracted.
+    spotlight** matched to the query (`source: public spotlight`), rendered
+    by the stealth browser when installed, else the scout browser. Either
+    way, relative signals, not exact volumes. The interest chart is an SVG
+    and isn't extracted.
 15. **Twitter/X — login is optional and upgrades it.** Logged into a spare X
     account in the scout browser → full tweet text + engagement (tier 0).
-    Without login it's **BEST-EFFORT**: Nitter mirrors (mostly dead) →
-    logged-out x.com (limited) → web-search **link-only** results. Always
-    report the `source` field; never promise Twitter-level completeness
-    without a login.
+    Without login: the stealth browser reads **profiles** (`user`) with
+    exact like/repost/reply/view counts, real dates and a `profile` block
+    (followers, following, posts, joined) — but X sends logged-out **search**
+    to a login page, so `search` stays BEST-EFFORT: Nitter mirrors (mostly
+    dead) → logged-out x.com in the scout browser → web-search **link-only**
+    results. Always report the `source` field.
+16. **Stealth browser (`obscura.py`)**: `render` gives markdown by default
+    (`--format text|html|links`); `--extract` takes a CSS selector, `--js`
+    an expression (promises awaited). `scrape` runs up to 100 URLs, 5 at a
+    time, and reports failures per URL; its `--js` must be synchronous.
+    `screenshot` saves to `downloads/screenshots/` (full pages capped at
+    8000px tall). Bot-check pages are never returned as content: `render`
+    and `screenshot` **relay** them to the scout browser (real Chrome), where
+    the user can pass any check (see "Security checks" above) — the output's
+    `engine`/`# via:` then says `scout browser`, and markdown becomes plain
+    text. `--no-chrome-fallback` (MCP: `chrome_fallback=false`) stops
+    instead. `scrape` never relays; blocked URLs are marked per result —
+    rerun those individually with `render`. `--use-scout-login` copies only that site's cookies
+    from the scout browser and **refuses** Instagram/TikTok/Facebook/X/
+    Pinterest/Amazon to protect the spare accounts — use their own commands.
+    If it isn't installed, the commands say how; ask the user before running
+    `install` (~73 MB from GitHub, SHA-256 verified). Optional proxy: set
+    `SOCIAL_SCOUT_PROXY` (e.g. `socks5://127.0.0.1:1080`).
+17. **`web_read` picks the better engine itself:** Jina Reader first; if Jina
+    fails, hits a bot check, or flags the page as not fully loaded, the
+    stealth browser renders it and the longer read wins. Output `# via:`
+    says which (`jina-reader`, `stealth-browser`, `local-fallback`).
 
 All four of these (Trustpilot, Google Shopping, Pinterest, Twitter/X) are
 supplementary research tools, not primary platforms.
@@ -190,3 +248,4 @@ See [README.md](README.md) for full team-facing setup. Short version:
 `~/.claude/skills/social-scout/` (or `%USERPROFILE%\.claude\skills\` on
 Windows), run `python scripts/doctor.py`. Instagram/TikTok additionally need
 the one-time `python scripts/browser.py launch` + spare-account login.
+Optional: `python scripts/obscura.py install` for the stealth browser.

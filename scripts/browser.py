@@ -43,6 +43,48 @@ except ImportError:
         "Run: pip install -r requirements.txt")
 
 CDP_PORT = int(os.environ.get("SOCIAL_SCOUT_CDP_PORT", 9223))
+
+# Human-check handoff: when a page lands on a CAPTCHA / "verify you are
+# human" check, bring the scout window forward and wait for the PERSON to
+# complete it — nothing here ever interacts with the check itself. Set
+# SOCIAL_SCOUT_CHECK_WAIT=0 to skip waiting and fail fast instead.
+CHECK_WAIT = int(os.environ.get("SOCIAL_SCOUT_CHECK_WAIT", 90))
+# First path segment only (Instagram /challenge/, Facebook /checkpoint/,
+# Google /sorry/) — "/tag/challenge" or ".../30_day_challenge/" on a normal
+# page must not look like a check.
+CHECK_PATH_SEGMENTS = {"challenge", "checkpoint", "sorry", "captcha",
+                       "validatecaptcha"}
+CHECK_URL_SUBSTRINGS = ("cdn-cgi/challenge-platform", "/errors/validatecaptcha")
+# Two kinds of widget, both only when actually visible:
+#  - GATE widgets are full-page challenges by definition (TikTok's slider,
+#    PerimeterX, Amazon's captcha form, Cloudflare's challenge form).
+#  - Generic CAPTCHA iframes (reCAPTCHA / hCaptcha / Turnstile) sit on plenty
+#    of normal pages — Google's corner badge, contact forms — so they only
+#    count when they aren't the badge/invisible kind AND the page is short,
+#    i.e. the check IS the page.
+CHECK_JS = r"""
+(() => {
+  const shown = e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 30; };
+  const gate = Array.from(document.querySelectorAll(
+      '#captcha-verify-image, .captcha_verify_container, #px-captcha, '
+    + 'form[action*="validateCaptcha"], #challenge-form')).some(shown);
+  const text = (document.body && document.body.innerText) || '';
+  const generic = text.length < 2500 && Array.from(document.querySelectorAll(
+      'iframe[src*="captcha"], iframe[src*="challenges.cloudflare.com"], iframe[title*="reCAPTCHA"]'))
+    .some(e => shown(e) && !e.closest('.grecaptcha-badge, .grecaptcha-logo')
+               && !/size=invisible/.test(e.src || ''));
+  return {widget: gate || generic, url: location.href, text: text.slice(0, 4001)};
+})()
+"""
+CHECK_PENDING_MSG = ("A security check is waiting in the scout browser (the "
+                     "Chrome window). Please complete it there, then ask me "
+                     "to try again — the browser usually stays trusted for a "
+                     "while afterwards.")
+
+
+class CheckPending(RuntimeError):
+    """A verification check is still waiting for the person. Its tab is left
+    OPEN on purpose so they can complete it — callers must not close it."""
 LAUNCH_HELP = ("Scout browser is not running. Start it with:\n"
                "    python scripts/browser.py launch\n"
                "then log into your dedicated spare account(s) if you haven't "
@@ -125,6 +167,7 @@ class Tab:
             target["webSocketDebuggerUrl"], timeout=60,
             suppress_origin=True)
         self._msg_id = 0
+        self.keep_open = False   # set when a check is left for the person
 
     def send(self, method, params=None, timeout=60):
         self._msg_id += 1
@@ -153,7 +196,7 @@ class Tab:
             raise RuntimeError(f"in-page JS failed: {text[:300]}")
         return res.get("result", {}).get("value")
 
-    def navigate(self, url, settle=4.0, timeout=45):
+    def navigate(self, url, settle=4.0, timeout=45, human_check=True):
         self.send("Page.navigate", {"url": url})
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -165,12 +208,72 @@ class Tab:
             time.sleep(0.5)
         # modern SPAs render after readyState completes; give hydration a beat
         time.sleep(settle)
+        if human_check:
+            reason = self.check_reason()
+            if reason and not self.wait_for_human(reason):
+                self.keep_open = True
+                raise CheckPending(CHECK_PENDING_MSG)
+
+    def check_reason(self):
+        """Why this page looks like a human-verification check, or None."""
+        try:
+            info = self.eval(CHECK_JS, timeout=15) or {}
+        except (RuntimeError, TimeoutError, OSError):
+            return None
+        url = (info.get("url") or "").lower()
+        segments = [s for s in urllib.parse.urlparse(url).path.split("/") if s]
+        if ((segments and segments[0] in CHECK_PATH_SEGMENTS)
+                or any(m in url for m in CHECK_URL_SUBSTRINGS)):
+            return "verification page"
+        if info.get("widget"):
+            return "CAPTCHA"
+        try:
+            from obscura import looks_blocked   # shared bot-check text detector
+        except Exception:
+            return None
+        return looks_blocked(info.get("text"))
+
+    def bring_to_front(self):
+        """Best effort: focus this tab and restore/raise its window. Windows
+        may refuse to let a background app steal focus — the waiting message
+        and the timeout cover that case."""
+        try:
+            self.send("Page.bringToFront", timeout=10)
+            win = self.send("Browser.getWindowForTarget", {"targetId": self.id},
+                            timeout=10)["windowId"]
+            for state in ("minimized", "normal"):   # restore = raise on Windows
+                self.send("Browser.setWindowBounds",
+                          {"windowId": win, "bounds": {"windowState": state}},
+                          timeout=10)
+        except Exception:
+            pass
+
+    def wait_for_human(self, reason, wait=None):
+        """Hand a verification check to the person at the keyboard: raise the
+        scout window, then poll until the check is gone (True) or `wait`
+        seconds pass (False). Never touches the check itself."""
+        wait = CHECK_WAIT if wait is None else wait
+        if wait <= 0:
+            return False
+        self.bring_to_front()
+        warn(f"A security check ({reason}) appeared in the scout browser — "
+             f"please complete it in the Chrome window. Waiting up to {wait}s...")
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            time.sleep(2)
+            if not self.check_reason():
+                warn("Check completed — thanks! Continuing.")
+                time.sleep(2)   # let the real page finish loading
+                return True
+        return False
 
     def close(self):
         try:
             self.ws.close()
         except OSError:
             pass
+        if self.keep_open:   # a check is waiting here for the person
+            return
         try:
             _http(f"/json/close/{self.id}")
         except OSError:

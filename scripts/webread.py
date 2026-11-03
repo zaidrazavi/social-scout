@@ -4,7 +4,14 @@
 PRIMARY:  Jina Reader (https://r.jina.ai/<url>) — free tier, no API key,
           ~20 requests/minute per IP; strips nav/ads/scripts and returns
           markdown. Set JINA_API_KEY to raise the rate limit (optional).
+SECOND:   the stealth browser (scripts/obscura.py) when it's installed —
+          renders the page's JavaScript locally and returns markdown, so
+          JS-heavy pages and Jina rate-limit hits still read. Skipped if not
+          installed.
 FALLBACK: direct fetch + stdlib HTML-to-text stripping (noisier but local).
+
+Bot-check pages ("verify you are human", Cloudflare, ...) are never returned
+as if they were the page's content — each tier treats them as a miss.
 
 This is SINGLE-URL reading, not crawling: it does not follow links, index
 sites, or search the web. No login or session is needed.
@@ -99,17 +106,60 @@ def read_local(url):
     return text.strip()
 
 
+JINA_PARTIAL = "This page maybe not yet fully loaded"
+
+
+def _jina_body(text):
+    """Jina prefixes Title/URL Source/Warning headers; compare content only."""
+    _, sep, body = text.partition("Markdown Content:")
+    return body if sep else text
+
+
+def _blocked(text):
+    """Bot-check page detector, shared with the stealth browser module."""
+    try:
+        from obscura import looks_blocked
+    except Exception:
+        return None
+    return looks_blocked(text)
+
+
+def read_obscura(url):
+    """Stealth-browser tier. Returns markdown, or None when it isn't
+    installed, fails, or lands on a bot-check page (the next tier runs)."""
+    try:
+        import obscura
+        if not obscura.is_installed():
+            return None
+        text = obscura._tidy(obscura.fetch(url, dump="markdown"))
+    except Exception:
+        return None
+    if not text.strip() or obscura.looks_blocked(text):
+        return None
+    return text
+
+
 def read_url(url, max_chars=DEFAULT_MAX_CHARS, force_local=False):
     """Returns (text, engine). Raises on total failure — never silent-empty."""
     jina_error = None
     if not force_local:
         try:
             text = read_jina(url)
-            if text.strip():
+            if text.strip() and not _blocked(text):
+                # Jina flags pages whose JavaScript hadn't finished; those
+                # often miss the actual content, so let the stealth browser
+                # render it too and keep whichever read got more.
+                if JINA_PARTIAL in text:
+                    rendered = read_obscura(url)
+                    if rendered and len(rendered) > len(_jina_body(text)):
+                        return _cap(rendered, max_chars), "stealth-browser"
                 return _cap(text, max_chars), "jina-reader"
-            jina_error = "empty response"
+            jina_error = "bot-check page" if text.strip() else "empty response"
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             jina_error = str(e)
+        text = read_obscura(url)
+        if text:
+            return _cap(text, max_chars), "stealth-browser"
     try:
         text = read_local(url)
     except (urllib.error.URLError, OSError, TimeoutError) as e:
@@ -117,11 +167,28 @@ def read_url(url, max_chars=DEFAULT_MAX_CHARS, force_local=False):
             f"Could not read {url}. "
             + (f"Jina Reader: {jina_error}. " if jina_error else "")
             + f"Direct fetch: {e}")
+    reason = _blocked(text)
+    if reason:
+        raise RuntimeError(
+            f"{url} only showed a {reason} page, not its content — the site "
+            "is blocking automated reading right now.")
     if not text.strip():
         raise RuntimeError(
             f"{url} fetched but yielded no readable text "
-            "(page may be fully JavaScript-rendered or blocked)")
+            "(page may be fully JavaScript-rendered or blocked"
+            + ("" if _obscura_installed() else
+               " — installing the stealth browser with `python scripts/"
+               "obscura.py install` lets JavaScript pages render")
+            + ")")
     return _cap(text, max_chars), "local-fallback"
+
+
+def _obscura_installed():
+    try:
+        import obscura
+        return obscura.is_installed()
+    except Exception:
+        return False
 
 
 def _cap(text, max_chars):

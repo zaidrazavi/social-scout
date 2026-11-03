@@ -157,6 +157,48 @@ def ensure_browser(platform, require_login):
 
 
 # --------------------------------------------------------------------------
+# stealth browser (Obscura) gating
+# --------------------------------------------------------------------------
+def obscura_installed():
+    try:
+        proc = _run(["obscura.py", "status"], timeout=30)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def ensure_obscura():
+    """None to proceed, or a user-facing message when it isn't installed."""
+    if obscura_installed():
+        return None
+    return ("The stealth browser this tool uses isn't installed on this "
+            "computer yet. It's a one-time ~73 MB download from GitHub "
+            "(checked against its published fingerprint). Ask me to run the "
+            "stealth_browser_install tool, or run "
+            "`python scripts/obscura.py install` yourself, then try again.")
+
+
+def _image_result(text):
+    """web_screenshot: return the PNG itself plus its JSON summary."""
+    import base64
+    import json
+    summary = text.split("\n\n---\n", 1)[0]
+    try:
+        info = json.loads(summary)
+        with open(info["path"], "rb") as f:
+            png = f.read()
+    except (ValueError, KeyError, OSError):
+        return [types.TextContent(type="text", text=text)]
+    if len(png) > 4_500_000:
+        return [types.TextContent(type="text", text=text + (
+            "\n\n(The image is too large to show inline — it's saved at the "
+            "path above. Try full_page=false or a smaller width.)"))]
+    return [types.ImageContent(type="image", mimeType="image/png",
+                               data=base64.b64encode(png).decode("ascii")),
+            types.TextContent(type="text", text=text)]
+
+
+# --------------------------------------------------------------------------
 # tool definitions
 # --------------------------------------------------------------------------
 def _schema(properties, required=()):
@@ -184,13 +226,20 @@ def _b(*a):  # tiny helper to keep the table readable
 TOOLS = {}
 
 
-def tool(name, description, schema, builder, gate=None, timeout=TIMEOUT_DEFAULT):
+def tool(name, description, schema, builder, gate=None, timeout=TIMEOUT_DEFAULT,
+         obscura_ok=False, image=False):
+    """obscura_ok: the script renders with the stealth browser when it's
+    installed, so skip launching Chrome for the gate (the script still falls
+    back to the scout browser itself). image: the script prints JSON with a
+    PNG `path`, returned to Claude as an actual image."""
     TOOLS[name] = {
         "description": description,
         "schema": schema,
         "builder": builder,
         "gate": gate,
         "timeout": timeout,
+        "obscura_ok": obscura_ok,
+        "image": image,
     }
 
 
@@ -367,6 +416,116 @@ tool(
     lambda a: ["webread.py", "read", a["url"], "--max-chars", str(a.get("max_chars", 20000))],
 )
 
+# ---- Stealth browser (Obscura: local headless engine, no login) ----
+NUM = {"type": "number"}
+
+
+def _render_args(a):
+    args = ["obscura.py", "render",
+            "--format", str(a.get("format", "markdown")),
+            "--max-chars", str(a.get("max_chars", 20000))]
+    if a.get("extract"):
+        args += ["--extract", a["extract"]]
+    if a.get("javascript"):
+        args += ["--js", a["javascript"]]
+    if a.get("wait_for"):
+        args += ["--wait-for", a["wait_for"]]
+    if a.get("wait_seconds") is not None:
+        args += ["--wait", str(a["wait_seconds"])]
+    if a.get("use_scout_login"):
+        args += ["--use-scout-login"]
+    if a.get("chrome_fallback") is False:
+        args += ["--no-chrome-fallback"]
+    return args + ["--", a["url"]]   # "--": a URL can never be read as a flag
+
+
+def _scrape_args(a):
+    args = ["obscura.py", "scrape",
+            "--max-chars", str(a.get("max_chars", 1500)),
+            "--concurrency", str(a.get("concurrency", 5))]
+    if a.get("extract"):
+        args += ["--extract", a["extract"]]
+    if a.get("javascript"):
+        args += ["--js", a["javascript"]]
+    return args + ["--"] + [str(u) for u in (a.get("urls") or [])]
+
+
+tool(
+    "web_render",
+    "Open any public web page in the local stealth browser (runs its "
+    "JavaScript, so it works on modern JS-heavy sites) and return it as "
+    "markdown/text/html/links. Optional: extract = a CSS selector to pull "
+    "every matching element's text/link; javascript = an expression to "
+    "evaluate in the page (promises awaited) and return as JSON; wait_for = a "
+    "CSS selector to wait for. use_scout_login=true reuses your login for "
+    "that site from the scout browser (not allowed for Instagram/TikTok/"
+    "Facebook/X/Pinterest/Amazon — use their own tools). If the site shows "
+    "a bot check, it reopens the page in the scout browser (Chrome) so the "
+    "USER can complete the check, then continues (chrome_fallback=false to "
+    "skip). No login needed.",
+    _schema({"url": STR,
+             "format": {**STR, "enum": ["markdown", "text", "html", "links"],
+                        "default": "markdown"},
+             "extract": STR, "javascript": STR, "wait_for": STR,
+             "wait_seconds": NUM,
+             "max_chars": {**INT, "default": 20000},
+             "use_scout_login": {**BOOL, "default": False},
+             "chrome_fallback": {**BOOL, "default": True}}, ["url"]),
+    _render_args,
+    gate=("obscura", False),
+    timeout=360,
+)
+tool(
+    "web_screenshot",
+    "Take a PNG screenshot of any public web page with the local stealth "
+    "browser — landing pages, product pages, ad creatives, 'show me what it "
+    "looks like'. full_page=true captures the whole scrolling page (up to "
+    "8000px tall). If the site shows a bot check, it reopens the page in the "
+    "scout browser (Chrome) for the USER to complete, then captures "
+    "(chrome_fallback=false to skip). Returns the image and where it was "
+    "saved. No login.",
+    _schema({"url": STR, "full_page": {**BOOL, "default": False},
+             "width": {**INT, "default": 1280}, "height": {**INT, "default": 800},
+             "wait_seconds": {**NUM, "default": 2},
+             "chrome_fallback": {**BOOL, "default": True}}, ["url"]),
+    lambda a: (["obscura.py", "screenshot",
+                "--width", str(a.get("width", 1280)),
+                "--height", str(a.get("height", 800)),
+                "--wait", str(a.get("wait_seconds", 2))]
+               + (["--full-page"] if a.get("full_page") else [])
+               + (["--no-chrome-fallback"] if a.get("chrome_fallback") is False else [])
+               + ["--", a["url"]]),
+    gate=("obscura", False),
+    image=True,
+    timeout=360,
+)
+tool(
+    "web_scrape_many",
+    "Scrape a list of public URLs in parallel with the local stealth browser "
+    "and return JSON per URL. Default: title, meta description, h1s, og:image, "
+    "word count and a text excerpt (max_chars each). Or pass extract = a CSS "
+    "selector, or javascript = a synchronous expression, applied to every "
+    "page. Up to 100 URLs; failures are reported per URL. No login.",
+    _schema({"urls": {"type": "array", "items": STR},
+             "extract": STR, "javascript": STR,
+             "max_chars": {**INT, "default": 1500},
+             "concurrency": {**INT, "default": 5}}, ["urls"]),
+    _scrape_args,
+    gate=("obscura", False),
+    timeout=900,
+)
+tool(
+    "stealth_browser_install",
+    "One-time setup: download and install the local stealth browser "
+    "(Obscura, ~73 MB from its official GitHub release, verified against the "
+    "published SHA-256). Needed by web_render, web_screenshot and "
+    "web_scrape_many; also makes web_read, Meta Ad Library, Pinterest and "
+    "X lookups work without opening Chrome. Ask the user before running it.",
+    _schema({}),
+    lambda a: ["obscura.py", "install"],
+    timeout=900,
+)
+
 # ---- Amazon (product public; reviews need an Amazon login in scout browser) ----
 # Both gate on the scout browser being RUNNING (Amazon bot-blocks scripted
 # requests; a real Chrome gets through). No login is enforced by the gate —
@@ -414,6 +573,7 @@ tool(
                "--country", str(a.get("country", "US")),
                "--max-ads", str(a.get("max_ads", 20))],
     gate=("meta", False),
+    obscura_ok=True,
     timeout=300,
 )
 tool(
@@ -427,6 +587,7 @@ tool(
                "--country", str(a.get("country", "US")),
                "--max-ads", str(a.get("max_ads", 20))],
     gate=("meta", False),
+    obscura_ok=True,
     timeout=300,
 )
 
@@ -542,6 +703,7 @@ tool(
                "--geo", str(a.get("geo", "US")),
                "--timeframe", str(a.get("timeframe", "last_12_months"))],
     gate=("pinterest", False),
+    obscura_ok=True,
     timeout=240,
 )
 tool(
@@ -553,6 +715,7 @@ tool(
     lambda a: ["pinterest_trends.py", "trending", "--geo", str(a.get("geo", "US"))]
               + (["--category", a["category"]] if a.get("category") else []),
     gate=("pinterest", False),
+    obscura_ok=True,
     timeout=240,
 )
 
@@ -615,18 +778,26 @@ async def call_tool(name, arguments):
     if spec is None:
         return [types.TextContent(type="text", text=f"ERROR: unknown tool '{name}'")]
 
-    # Gate login-walled platforms behind the scout browser.
+    # Gate login-walled platforms behind the scout browser, and the stealth
+    # browser tools behind Obscura being installed.
     gate = spec["gate"]
     if gate is not None:
         platform, require_login = gate
-        message = await anyio.to_thread.run_sync(
-            ensure_browser, platform, require_login)
+        if platform == "obscura":
+            message = await anyio.to_thread.run_sync(ensure_obscura)
+        elif spec["obscura_ok"] and await anyio.to_thread.run_sync(obscura_installed):
+            message = None  # renders headless; no Chrome window needed
+        else:
+            message = await anyio.to_thread.run_sync(
+                ensure_browser, platform, require_login)
         if message is not None:
             return [types.TextContent(type="text", text=message)]
 
     argv = spec["builder"](arguments)
-    text, _is_error = await anyio.to_thread.run_sync(
+    text, is_error = await anyio.to_thread.run_sync(
         run_script, argv, spec["timeout"])
+    if spec["image"] and not is_error:
+        return _image_result(text)
     return [types.TextContent(type="text", text=text)]
 
 

@@ -2,10 +2,11 @@
 """Meta (Facebook/Instagram) Ad Library scraper — competitor ad intel.
 
 The Ad Library (https://www.facebook.com/ads/library/) is PUBLIC — no Facebook
-login needed — but it renders entirely with JavaScript, so this drives the
-scout browser (real Chrome) exactly like the Instagram/TikTok scrapers. If the
-scout browser isn't running it is auto-launched. Ads are read from the
-rendered DOM, keyed on each card's "Library ID".
+login needed — but it renders entirely with JavaScript. When the stealth
+browser (scripts/obscura.py) is installed it renders the page headless, with
+no Chrome window; otherwise, or if Meta bounces it, this drives the scout
+browser (real Chrome, auto-launched). The same in-page extractor runs on
+either. Ads are read from the rendered DOM, keyed on each card's "Library ID".
 
 Tip for the reader: an ad that has been running a long time is usually a
 winner (advertisers kill losers fast).
@@ -138,24 +139,70 @@ def collect_ads(tab, max_ads):
     return ads[:max_ads]
 
 
-def run(url, max_ads, label):
-    tab = open_scout().page(url, settle=8)
+def read_ads(tab, max_ads):
+    """Engine-agnostic: works on a scout-browser or stealth-browser tab.
+    Raises RuntimeError with the reason when the Ad Library didn't load."""
+    title = tab.eval("document.title") or ""
+    if is_walled(tab):
+        raise RuntimeError(
+            "Meta bounced the Ad Library to a login/checkpoint wall. Open "
+            "the scout browser window (python scripts/browser.py launch), "
+            "load facebook.com once to clear it, then retry.")
+    if "Ad Library" not in title:
+        raise RuntimeError(
+            f"The Ad Library didn't load as expected (page title: "
+            f"'{title[:60]}'). Meta may be blocking — open the scout "
+            "browser window to check, then retry.")
+    return collect_ads(tab, max_ads)
+
+
+def read_ads_stealth(url, max_ads):
+    """Headless tier. Returns ads, or None (not installed / bounced / failed)
+    so the caller falls back to the scout browser."""
     try:
-        title = tab.eval("document.title") or ""
-        if is_walled(tab):
-            die("Meta bounced the Ad Library to a login/checkpoint wall. Open "
-                "the scout browser window (python scripts/browser.py launch), "
-                "load facebook.com once to clear it, then retry.")
-        if "Ad Library" not in title:
-            die(f"The Ad Library didn't load as expected (page title: "
-                f"'{title[:60]}'). Meta may be blocking — open the scout "
-                "browser window to check, then retry.")
-        ads = collect_ads(tab, max_ads)
-    finally:
-        tab.close()
-    for a in ads:  # the permalink to this exact ad in the Ad Library
-        a["ad_library_url"] = f"{LIB}?id={a['ad_id']}"
-    return ads
+        import obscura
+        if not obscura.is_installed():
+            return None
+        with obscura.Session() as s:
+            tab = s.page(url, settle=8)
+            try:
+                return read_ads(tab, max_ads)
+            finally:
+                tab.close()
+    except Exception as e:
+        warn(f"stealth browser couldn't read the Ad Library ({e}) — "
+             "falling back to the scout browser...")
+        return None
+
+
+# Rendering artifacts, not ad copy: lone ellipses (collapsed "see more"
+# toggles) and video player timers like "0:00 / 0:06".
+NOISE_LINE = re.compile(r"^(?:…|\.\.\.|\d+:\d{2}\s*/\s*\d+:\d{2})$")
+
+
+def clean_text(text):
+    if not text:
+        return text
+    lines = [l for l in text.split("\n") if not NOISE_LINE.match(l.strip())]
+    return "\n".join(lines).strip() or None
+
+
+def run(url, max_ads, label):
+    """Returns (ads, engine)."""
+    ads, engine = read_ads_stealth(url, max_ads), "stealth browser"
+    if ads is None:
+        engine = "scout browser"
+        tab = open_scout().page(url, settle=8)
+        try:
+            ads = read_ads(tab, max_ads)
+        except RuntimeError as e:
+            die(str(e))
+        finally:
+            tab.close()
+    for a in ads:
+        a["ad_text"] = clean_text(a.get("ad_text"))
+        a["ad_library_url"] = f"{LIB}?id={a['ad_id']}"  # permalink to this ad
+    return ads, engine
 
 
 def platforms_note(ads):
@@ -173,11 +220,11 @@ def cmd_search(args):
     q = urllib.parse.quote(args.query)
     url = (f"{LIB}?active_status=active&ad_type=all&country={args.country}"
            f"&q={q}&media_type=all")
-    ads = run(url, cap, args.query)
+    ads, engine = run(url, cap, args.query)
     notes = [n for n in (platforms_note(ads),
                          None if ads else "No active ads matched. Try a "
                          "broader keyword or a different --country.") if n]
-    emit({"query": args.query, "country": args.country,
+    emit({"query": args.query, "country": args.country, "engine": engine,
           "count": len(ads), "ads": ads,
           **({"notes": notes} if notes else {})})
 
@@ -204,7 +251,7 @@ def cmd_page(args):
         name = name.split("/")[0].replace("-", " ")
         url = f"{base}&q={urllib.parse.quote(name)}&media_type=all"
         who = f"name '{name}'"
-    ads = run(url, cap, who)
+    ads, engine = run(url, cap, who)
     by_id = val.isdigit() or bool(PAGE_ID_RE.search(val))
     notes = [n for n in (
         platforms_note(ads),
@@ -213,7 +260,7 @@ def cmd_page(args):
                             "view_all_page_id URL."),
         None if ads else "No active ads found for this advertiser.") if n]
     emit({"page": args.page, "resolved": who, "country": args.country,
-          "count": len(ads), "ads": ads,
+          "engine": engine, "count": len(ads), "ads": ads,
           **({"notes": notes} if notes else {})})
 
 

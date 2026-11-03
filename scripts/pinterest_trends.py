@@ -2,8 +2,11 @@
 """Pinterest Trends — visual/aesthetic trend signals for a niche.
 
 Pinterest Trends (https://trends.pinterest.com) is JavaScript-rendered and
-blocks non-browser requests, so this uses the scout browser (auto-launched, no
-Pinterest login needed for the public view). Parsing is resilient — it reads
+blocks non-browser requests. The public view renders in the stealth browser
+(scripts/obscura.py, headless, no Chrome window) when it's installed, else in
+the scout browser (auto-launched, no Pinterest login needed for the public
+view). The logged-in per-keyword tier always uses the scout browser, where
+the login lives. Parsing is resilient — it reads
 the rendered text (like tiktok.py's Creative Center scraper) rather than
 brittle CSS selectors, since Pinterest redesigns often.
 
@@ -43,27 +46,64 @@ def open_scout():
     return browser.attach()
 
 
+def read_trends(tab):
+    """Engine-agnostic: scout-browser or stealth-browser tab -> page text.
+    Raises RuntimeError with the reason when Trends didn't load."""
+    landed = (tab.eval("location.href") or "").lower()
+    if "login" in landed or "/business" in landed:
+        raise RuntimeError("Pinterest bounced to a login page. Open the scout "
+                           "browser window, load trends.pinterest.com once, "
+                           "then retry.")
+    tab.eval("window.scrollTo(0, document.body.scrollHeight)")
+    jitter_sleep(2, 4, "loading Pinterest Trends")
+    title = tab.eval("document.title") or ""
+    body = tab.eval("document.body.innerText") or ""
+    if "Trends" not in title and "Trend" not in body[:200]:
+        raise RuntimeError(
+            f"Pinterest Trends didn't load as expected (title '{title[:50]}'). "
+            "It may be blocking or redesigned — open the scout browser to check.")
+    return body
+
+
+def read_trends_stealth(url):
+    """Headless tier. Returns page text only if the spotlight actually parses
+    — otherwise None, and the scout browser gets a turn."""
+    try:
+        import obscura
+        if not obscura.is_installed():
+            return None
+        with obscura.Session() as s:
+            tab = s.page(url, settle=9)
+            try:
+                body = read_trends(tab)
+            finally:
+                tab.close()
+    except Exception as e:
+        warn(f"stealth browser couldn't read Pinterest Trends ({e}) — "
+             "falling back to the scout browser...")
+        return None
+    if not parse_spotlight(body):
+        warn("stealth browser loaded Pinterest Trends but no spotlight parsed — "
+             "falling back to the scout browser...")
+        return None
+    return body
+
+
 def load_trends(geo, query=None):
     params = {"country": geo}
     if query:
         params["query"] = query
     url = "https://trends.pinterest.com/?" + urllib.parse.urlencode(params)
+    body = read_trends_stealth(url)
+    if body is not None:
+        return body
     tab = open_scout().page(url, settle=9)
     try:
-        landed = (tab.eval("location.href") or "").lower()
-        if "login" in landed or "/business" in landed:
-            die("Pinterest bounced to a login page. Open the scout browser "
-                "window, load trends.pinterest.com once, then retry.")
-        tab.eval("window.scrollTo(0, document.body.scrollHeight)")
-        jitter_sleep(2, 4, "loading Pinterest Trends")
-        title = tab.eval("document.title") or ""
-        body = tab.eval("document.body.innerText") or ""
+        return read_trends(tab)
+    except RuntimeError as e:
+        die(str(e))
     finally:
         tab.close()
-    if "Trends" not in title and "Trend" not in body[:200]:
-        die(f"Pinterest Trends didn't load as expected (title '{title[:50]}'). "
-            "It may be blocking or redesigned — open the scout browser to check.")
-    return body
 
 
 def parse_spotlight(body):
